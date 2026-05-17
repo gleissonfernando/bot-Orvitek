@@ -4,6 +4,7 @@ const { Client, Events, GatewayIntentBits } = require('discord.js');
 const { getGuildSetup } = require('./lib/store');
 const { buildSupportRulesEmbeds } = require('./lib/supportRules');
 const { replacePanelMessage } = require('./lib/panelUtils');
+const { resolveConfiguredChannel } = require('./lib/panelLookup');
 
 if (!process.env.DISCORD_TOKEN || !process.env.GUILD_ID) {
   throw new Error('Configure DISCORD_TOKEN e GUILD_ID no .env.');
@@ -16,10 +17,7 @@ const client = new Client({
 client.once(Events.ClientReady, async () => {
   const guild = await client.guilds.fetch(process.env.GUILD_ID);
   const setup = getGuildSetup(guild.id);
-  const channelId = setup?.channels?.supportRules;
-  const channel = channelId
-    ? await guild.channels.fetch(channelId).catch(() => null)
-    : null;
+  const channel = await resolveConfiguredChannel(guild, setup, 'supportRules');
 
   if (!channel?.isTextBased()) {
     throw new Error('Canal de regras-suporte não encontrado. Execute /ativar primeiro.');
