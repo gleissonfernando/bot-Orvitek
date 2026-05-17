@@ -165,7 +165,6 @@ function buildPlansEmbeds(input = {}) {
             '✅ Licenças e clientes\n' +
             '✅ Alerta de vencimento automático\n' +
             '✅ Relatório semanal automático\n' +
-            '✅ Gateway de pagamento\n' +
             '✅ Dashboard analytics de membros\n' +
             '✅ Comando /ativar - monta tudo automaticamente'
         },
@@ -183,11 +182,11 @@ function buildPlansEmbeds(input = {}) {
           '✅ Reinicialização automática\n' +
           '✅ Atualizações sem sair do ar\n' +
           '✅ Suporte técnico incluído\n\n' +
-          '**Para entrar na fila:** pagamento de 50% do valor do plano.\n' +
-          '**Prazo médio:** até 5 dias após aprovação na fila.\n' +
-          '**Ativação:** feita após envio e aprovação do comprovante.'
+          '**Para entrar na fila:** siga as instruções enviadas no ticket.\n' +
+          '**Prazo médio:** até 5 dias após a aprovação.\n' +
+          '**Ativação:** feita após a validação do atendimento.'
       )
-      .setFooter({ text: 'Após clicar no plano, envie o comprovante no canal aberto pelo bot.' })
+      .setFooter({ text: 'Após clicar no plano, siga as instruções no canal aberto pelo bot.' })
   ];
 }
 

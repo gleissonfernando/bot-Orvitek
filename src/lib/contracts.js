@@ -48,14 +48,14 @@ function buildContractIntroEmbed(ticket) {
     .setColor(colors.gold)
     .setTitle('Contrato Online — Orvitel-bot')
     .setDescription(
-      'Antes de iniciar pagamento, fila ou produção, o cliente precisa preencher e aceitar o contrato digital.\n\n' +
+      'Antes de iniciar a fila ou a produção, o cliente precisa preencher e aceitar o contrato digital.\n\n' +
         'Ao assinar, o contrato em PDF segue para o privado do cliente e o canal fica pronto para a criação da chave de acesso.'
     )
     .addFields(
       { name: 'Plano selecionado', value: plan.name, inline: true },
       { name: 'Valor total', value: money(plan.total), inline: true },
-      { name: 'Entrada 50%', value: money(entry), inline: true },
-      { name: 'Regra importante', value: 'Após início do desenvolvimento, a entrada de 50% não é reembolsável.' },
+      { name: 'Entrada inicial', value: money(entry), inline: true },
+      { name: 'Regra importante', value: 'Após início do desenvolvimento, a entrada inicial não é reembolsável.' },
       { name: 'Entrega', value: 'A produção entra na fila após aprovação da entrada. Prazo médio: até 5 dias.' }
     )
     .setFooter({ text: 'Clique em Aceito e Assino para preencher os dados do contrato.' });
@@ -124,8 +124,8 @@ function buildContractModal() {
       new ActionRowBuilder().addComponents(
         new TextInputBuilder()
           .setCustomId('phoneAndPayment')
-          .setLabel('WhatsApp e forma de pagamento')
-          .setPlaceholder('Ex: (11) 99999-9999 | Pix')
+          .setLabel('WhatsApp e contato')
+          .setPlaceholder('Ex: (11) 99999-9999 | contato alternativo')
           .setStyle(TextInputStyle.Short)
           .setRequired(true)
       ),
@@ -156,7 +156,7 @@ CONTRATANTE:
 Nome: ${contract.fullName}
 CPF: ${contract.cpf}
 E-mail: ${contract.email}
-Telefone/Forma de pagamento: ${contract.phoneAndPayment}
+Telefone/Contato: ${contract.phoneAndPayment}
 Projeto/Bot: ${contract.projectName}
 Discord: ${contract.userTag} (${contract.userId})
 
@@ -166,20 +166,20 @@ Este contrato tem como objetivo a prestação de serviço de desenvolvimento, co
 2. VALOR DO SERVIÇO
 Plano contratado: ${plan.name}
 ${discountLine}Valor total: ${money(plan.total)}
-Entrada de 50%: ${money(entry)}
+Entrada inicial: ${money(entry)}
 Valor restante: ${money(remaining)}
 
 3. INÍCIO DO SERVIÇO
-O serviço somente será iniciado após a confirmação do pagamento inicial de 50%.
+O serviço somente será iniciado após a confirmação da entrada inicial.
 
 4. ENTREGA DO SERVIÇO
 A Orvitel-bot se compromete a realizar o serviço conforme combinado previamente com o contratante. Alterações extras, novas funções ou mudanças fora do combinado inicial poderão gerar cobrança adicional.
 
 5. DESISTÊNCIA E NÃO REEMBOLSO
-Caso o contratante desista do serviço após o início do desenvolvimento, o valor inicial de 50% não será reembolsado. Esse valor será considerado taxa de serviço iniciado, cobrindo tempo técnico, planejamento, configuração, desenvolvimento inicial e reserva de agenda.
+Caso o contratante desista do serviço após o início do desenvolvimento, o valor inicial não será reembolsado. Esse valor será considerado taxa de serviço iniciado, cobrindo tempo técnico, planejamento, configuração, desenvolvimento inicial e reserva de agenda.
 
 6. PAGAMENTO FINAL
-Após o bot estar pronto, o contratante deverá realizar o pagamento dos 50% restantes para receber a entrega final, arquivos, acesso ou configuração definitiva do bot.
+Após o bot estar pronto, o contratante deverá realizar a quitação restante para receber a entrega final, arquivos, acesso ou configuração definitiva do bot.
 
 7. HOSPEDAGEM E MANUTENÇÃO
 Quando aplicável, o serviço de hospedagem é cobrado mensalmente e precisa ser regularizado até o dia 08 de cada mês.
@@ -244,7 +244,7 @@ function buildSignedContractEmbed(contract) {
       { name: 'Cliente', value: contract.fullName, inline: true },
       { name: 'Projeto', value: contract.projectName, inline: true },
       { name: 'Plano', value: plan.name, inline: true },
-      { name: 'Entrada para fila', value: `${money(plan.entry)} (50% do plano com desconto)`, inline: true },
+      { name: 'Entrada para fila', value: money(plan.entry), inline: true },
       { name: 'Valor restante', value: money(plan.total - plan.entry), inline: true },
       {
         name: 'Cupom',

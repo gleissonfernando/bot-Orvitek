@@ -8,8 +8,8 @@ function buildHowItWorksEmbeds() {
       .setTitle('Como funciona nosso sistema')
       .setDescription(
         'Entenda em poucos passos como adquirir, ativar e usar nosso produto. É simples, rápido e totalmente automatizado.\n\n' +
-          '**passo 1** Escolhe o plano › **passo 2** Faz o pagamento › **passo 3** Acesso liberado › **passo 4** Usa o produto › **passo 5** Renova quando quiser\n\n' +
-          '⚡ Ativação em até 5 minutos após confirmação do pagamento'
+          '**passo 1** Escolhe o plano › **passo 2** Confirma a contratação › **passo 3** Acesso liberado › **passo 4** Usa o produto › **passo 5** Renova quando quiser\n\n' +
+          '⚡ Ativação em até 5 minutos após a confirmação'
       )
       .addFields(
         { name: 'Passo a passo completo', value: '\u200b' },
@@ -22,12 +22,12 @@ function buildHowItWorksEmbeds() {
           value: 'Vá até #planos-e-precos e compare os planos disponíveis. Cada plano tem benefícios e tempo de acesso diferentes.'
         },
         {
-          name: '3. Realize o pagamento',
-          value: 'Clique em comprar no plano desejado. Você será direcionado ao checkout com os métodos de pagamento disponíveis.'
+          name: '3. Confirme a contratação',
+          value: 'Clique em comprar no plano desejado e siga as instruções do bot para continuar o atendimento.'
         },
         {
           name: '4. Confirmação automática',
-          value: 'Após o pagamento confirmado, o bot libera seu acesso automaticamente e você recebe uma DM com suas credenciais.'
+          value: 'Após a confirmação, o bot libera seu acesso automaticamente e você recebe uma DM com suas credenciais.'
         },
         {
           name: '5. Acesse a área do cliente',
@@ -54,11 +54,6 @@ function buildHowItWorksEmbeds() {
           name: 'Todos os planos incluem',
           value: '✅ Atualizações automáticas\n✅ Suporte dedicado\n✅ Acesso imediato'
         },
-        { name: 'Formas de pagamento aceitas', value: '\u200b' },
-        { name: 'Pix', value: '✅ Aprovação imediata', inline: true },
-        { name: 'Cartão de crédito', value: '✅ 1x a 12x', inline: true },
-        { name: 'Boleto bancário', value: '⏳ Até 3 dias úteis', inline: true },
-        { name: 'Cartão de débito', value: '✅ Aprovação imediata', inline: true },
         {
           name: 'Política de reembolso',
           value:

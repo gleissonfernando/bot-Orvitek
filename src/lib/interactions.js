@@ -1107,7 +1107,7 @@ async function openTicket(interaction, setup, type) {
         .setTitle(`Ticket #${ticket.id}`)
         .setDescription(
           purchaseTypes(type)
-            ? 'Envie o comprovante neste canal. Primeiro você cria a chave de acesso, depois envia o comprovante com a chave visível.\n\nA ativação do bot só é feita depois que o comprovante for aprovado. Para entrar na fila de produção, é necessário pagar 50% do valor do plano. Cada bot tem prazo médio de entrega de até 5 dias após aprovação na fila.'
+            ? 'Envie o comprovante neste canal. Primeiro você cria a chave de acesso, depois envia o comprovante com a chave visível.\n\nA ativação do bot só é feita depois que o comprovante for aprovado. Para entrar na fila de produção, siga as instruções do atendimento e aguarde a aprovação. Cada bot tem prazo médio de entrega de até 5 dias após aprovação na fila.'
             : 'A equipe irá atender você em breve.'
         )
         .addFields(
@@ -1117,7 +1117,7 @@ async function openTicket(interaction, setup, type) {
           ...(purchaseTypes(type)
             ? [
                 { name: 'Comprovante', value: 'Deve ser enviado aqui no canal.', inline: true },
-                { name: 'Entrada na fila', value: '50% do valor do plano.', inline: true },
+                { name: 'Entrada na fila', value: 'Conforme instruções do atendimento.', inline: true },
                 { name: 'Prazo médio', value: 'Até 5 dias após aprovação.', inline: true }
               ]
             : [])
@@ -1234,7 +1234,7 @@ async function handleQueueAction(interaction, setup) {
       content:
         `${interaction.user}, sua solicitação de entrada na fila foi registrada.\n\n` +
         `Clientes na frente no momento: **${position.ahead}**.\n` +
-        `Para ser aprovado na fila, envie aqui o comprovante de pagamento de **50% do valor do plano**.` +
+        `Para ser aprovado na fila, envie aqui o comprovante de pagamento conforme as instruções do atendimento.` +
         (pricing.couponMatches ? `\nCupom aplicado: **${pricing.coupon.code}** (-${pricing.coupon.percent}%).` : '')
     }));
     return;
