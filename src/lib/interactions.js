@@ -551,13 +551,37 @@ function buildTicketPanelPayload() {
     ],
     components: [
       new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId('ticket_bug').setLabel('Reportar Bug').setStyle(ButtonStyle.Danger),
-        new ButtonBuilder().setCustomId('ticket_payment').setLabel('Problema com Pagamento').setStyle(ButtonStyle.Secondary),
-        new ButtonBuilder().setCustomId('ticket_question').setLabel('Duvida Geral').setStyle(ButtonStyle.Primary),
-        new ButtonBuilder().setCustomId('ticket_technical').setLabel('Suporte Tecnico').setStyle(ButtonStyle.Primary)
+        new StringSelectMenuBuilder()
+          .setCustomId('ticket_tools')
+          .setPlaceholder('Selecione o tipo de atendimento')
+          .setMinValues(1)
+          .setMaxValues(1)
+          .addOptions(
+            { label: 'Reportar Bug', value: 'ticket_bug', description: 'Informar erro ou falha no sistema.' },
+            { label: 'Dúvida Geral', value: 'ticket_question', description: 'Abrir atendimento para tirar dúvidas.' },
+            { label: 'Suporte Técnico', value: 'ticket_technical', description: 'Solicitar ajuda técnica.' }
+          )
       )
     ]
   };
+}
+
+function buildTicketReasonModal(type) {
+  const modal = new ModalBuilder()
+    .setCustomId(`ticket_reason:${type}`)
+    .setTitle(ticketLabels[type] || 'Abrir ticket');
+
+  const reason = new TextInputBuilder()
+    .setCustomId('reason')
+    .setLabel('Motivo do ticket')
+    .setStyle(TextInputStyle.Paragraph)
+    .setRequired(true)
+    .setMinLength(10)
+    .setMaxLength(1000)
+    .setPlaceholder('Descreva o que você precisa para a equipe entender seu atendimento.');
+
+  modal.addComponents(new ActionRowBuilder().addComponents(reason));
+  return modal;
 }
 
 function buildRenewPanelPayload() {
@@ -1194,7 +1218,7 @@ async function verifyMember(interaction, setup) {
   }
 }
 
-async function openTicket(interaction, setup, type) {
+async function openTicket(interaction, setup, type, reason = null) {
   const settings = getSystemSettings(interaction.guild.id);
   const slug = ticketSlugs[type] || 'suporte';
   const username = channelSafe(interaction.user.username);
@@ -1259,6 +1283,7 @@ async function openTicket(interaction, setup, type) {
           { name: 'Precisa de', value: ticketLabels[type] || type, inline: true },
           { name: 'Cliente', value: interaction.user.tag, inline: true },
           { name: 'Canal', value: `Suporte | ${interaction.user.username}` },
+          ...(reason ? [{ name: 'Motivo', value: reason.slice(0, 1000) }] : []),
           ...(purchaseTypes(type)
             ? [
                 { name: 'Comprovante', value: 'Deve ser enviado aqui no canal.', inline: true },
@@ -2647,6 +2672,17 @@ async function handleSelect(interaction) {
     return true;
   }
 
+  if (interaction.customId === 'ticket_tools') {
+    const type = interaction.values?.[0];
+    if (!ticketLabels[type]) {
+      await interaction.reply(privateReply('Selecione um tipo de ticket válido.'));
+      return true;
+    }
+
+    await interaction.showModal(buildTicketReasonModal(type));
+    return true;
+  }
+
   if (interaction.customId === 'panel_hosting_paid_user') {
     await handleHostingAdminUserSelect(interaction, true);
     return true;
@@ -2684,6 +2720,18 @@ async function handleModal(interaction) {
   const setup = resolveGuildSetup(interaction.guild);
   if (!setup) {
     await interaction.reply(privateReply('O servidor ainda não foi configurado com /ativar.'));
+    return true;
+  }
+
+  if (interaction.customId.startsWith('ticket_reason:')) {
+    const [, type] = interaction.customId.split(':');
+    if (!ticketLabels[type]) {
+      await interaction.reply(privateReply('Tipo de ticket inválido.'));
+      return true;
+    }
+
+    const reason = interaction.fields.getTextInputValue('reason').trim();
+    await openTicket(interaction, setup, type, reason);
     return true;
   }
 

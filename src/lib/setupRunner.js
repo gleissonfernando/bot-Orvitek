@@ -4,7 +4,8 @@ const {
   ButtonStyle,
   ChannelType,
   EmbedBuilder,
-  PermissionFlagsBits
+  PermissionFlagsBits,
+  StringSelectMenuBuilder
 } = require('discord.js');
 const { categories, colors, roleSpecs, staffRoleKeys } = require('../config/setup');
 const { saveGuildSetup } = require('./store');
@@ -186,10 +187,16 @@ async function sendPanels(channels, report) {
       ),
     [
       new ActionRowBuilder().addComponents(
-        button('ticket_bug', 'Reportar Bug', ButtonStyle.Danger),
-        button('ticket_payment', 'Problema com Pagamento', ButtonStyle.Secondary),
-        button('ticket_question', '❓ Dúvida Geral', ButtonStyle.Primary),
-        button('ticket_technical', '⚙️ Suporte Técnico', ButtonStyle.Primary)
+        new StringSelectMenuBuilder()
+          .setCustomId('ticket_tools')
+          .setPlaceholder('Selecione o tipo de atendimento')
+          .setMinValues(1)
+          .setMaxValues(1)
+          .addOptions(
+            { label: 'Reportar Bug', value: 'ticket_bug', description: 'Informar erro ou falha no sistema.' },
+            { label: 'Dúvida Geral', value: 'ticket_question', description: 'Abrir atendimento para tirar dúvidas.' },
+            { label: 'Suporte Técnico', value: 'ticket_technical', description: 'Solicitar ajuda técnica.' }
+          )
       )
     ]
   );
