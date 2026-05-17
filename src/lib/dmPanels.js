@@ -62,7 +62,7 @@ function buildHostingBillingPanel({ guildName, projectName, dueAt, channelId }) 
         .setTitle('💳 Cobrança de hospedagem')
         .setDescription(
           `Seu projeto **${projectName || 'seu projeto'}** em **${guildName}** está com cobrança de hospedagem pendente.\n\n` +
-            'Se o pagamento já foi feito, clique em **Já paguei** e envie o comprovante no ticket. Se ainda não pagou, clique em **Não paguei** para receber as instruções.'
+            'Se ainda não pagou, clique em **Não paguei** para receber as instruções.'
         )
         .addFields(
           { name: 'Vencimento', value: dueAt || 'não informado', inline: true },
@@ -73,7 +73,6 @@ function buildHostingBillingPanel({ guildName, projectName, dueAt, channelId }) 
     ],
     components: [
       new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId(`hosting_paid:${channelId}`).setLabel('Já paguei').setStyle(ButtonStyle.Success),
         new ButtonBuilder().setCustomId(`hosting_unpaid:${channelId}`).setLabel('Não paguei').setStyle(ButtonStyle.Danger)
       )
     ]

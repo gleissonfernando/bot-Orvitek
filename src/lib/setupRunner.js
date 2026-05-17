@@ -169,8 +169,7 @@ async function sendPanels(channels, report) {
       new ActionRowBuilder().addComponents(
         button('plan_basic', 'Básico', ButtonStyle.Secondary),
         button('plan_pro', 'Profissional', ButtonStyle.Secondary),
-        button('plan_lifetime', 'Vitalício', ButtonStyle.Secondary),
-        button('plan_paid', 'Já paguei', ButtonStyle.Success)
+        button('plan_lifetime', 'Vitalício', ButtonStyle.Secondary)
       )
     ]
   );
