@@ -2558,6 +2558,11 @@ async function handleButton(interaction) {
   }
 
   if (ticketLabels[interaction.customId]) {
+    if (interaction.customId.startsWith('ticket_')) {
+      await interaction.showModal(buildTicketReasonModal(interaction.customId));
+      return true;
+    }
+
     await openTicket(interaction, setup, interaction.customId);
     return true;
   }
