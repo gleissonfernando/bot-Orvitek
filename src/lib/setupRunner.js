@@ -4,8 +4,7 @@ const {
   ButtonStyle,
   ChannelType,
   EmbedBuilder,
-  PermissionFlagsBits,
-  StringSelectMenuBuilder
+  PermissionFlagsBits
 } = require('discord.js');
 const { categories, colors, roleSpecs, staffRoleKeys } = require('../config/setup');
 const { saveGuildSetup } = require('./store');
@@ -15,6 +14,7 @@ const { buildHowItWorksEmbeds } = require('./howItWorks');
 const { buildPlansButtons, buildPlansEmbeds } = require('./plans');
 const { getSystemSettings } = require('./store');
 const { replacePanelMessage } = require('./panelUtils');
+const { buildRenewPanelPayload, buildSuggestionsPanelPayload, buildTicketPanelPayload } = require('./staticPanels');
 
 function rolePermissions(roleIds, roleKeys, allowSend = true) {
   return roleKeys
@@ -176,55 +176,13 @@ async function sendPanels(channels, report) {
   );
   report.created.panels.push('Compra');
 
-  await sendPanel(
-    channels.openTicket,
-    new EmbedBuilder()
-      .setColor(colors.blue)
-      .setTitle('Central de Suporte')
-      .setDescription(
-        'Precisa de ajuda? Abra um ticket e nossa equipe irá atendê-lo em breve.\n\n' +
-          '⏱️ Horário de atendimento: Seg-Sex, 9h-18h\nDescreva seu problema com detalhes para um atendimento mais rápido.'
-      ),
-    [
-      new ActionRowBuilder().addComponents(
-        new StringSelectMenuBuilder()
-          .setCustomId('ticket_tools')
-          .setPlaceholder('Selecione o tipo de atendimento')
-          .setMinValues(1)
-          .setMaxValues(1)
-          .addOptions(
-            { label: 'Reportar Bug', value: 'ticket_bug', description: 'Informar erro ou falha no sistema.' },
-            { label: 'Dúvida Geral', value: 'ticket_question', description: 'Abrir atendimento para tirar dúvidas.' },
-            { label: 'Suporte Técnico', value: 'ticket_technical', description: 'Solicitar ajuda técnica.' }
-          )
-      )
-    ]
-  );
+  await replacePanelMessage(channels.openTicket, buildTicketPanelPayload());
   report.created.panels.push('Suporte');
 
-  await sendPanel(
-    channels.renewPlan,
-    new EmbedBuilder()
-      .setColor(colors.orange)
-      .setTitle('Renovação de Plano')
-      .setDescription('Seu plano expirou ou está prestes a vencer. Renove agora para não perder o acesso!\n\n⚠️ Clientes com plano expirado têm acesso limitado ao servidor.'),
-    [
-      new ActionRowBuilder().addComponents(
-        button('renew_now', 'Renovar Agora', ButtonStyle.Success),
-        button('renew_check', 'Já renovei, verificar acesso', ButtonStyle.Secondary)
-      )
-    ]
-  );
+  await replacePanelMessage(channels.renewPlan, buildRenewPanelPayload());
   report.created.panels.push('Renovação');
 
-  await sendPanel(
-    channels.suggestions,
-    new EmbedBuilder()
-      .setColor(colors.purple)
-      .setTitle('Caixa de Sugestões')
-      .setDescription('Tem uma ideia para melhorar nosso produto ou servidor? Compartilhe com a gente!'),
-    [new ActionRowBuilder().addComponents(button('suggestion_open', 'Enviar Sugestão', ButtonStyle.Primary))]
-  );
+  await replacePanelMessage(channels.suggestions, buildSuggestionsPanelPayload());
   report.created.panels.push('Sugestões');
 }
 

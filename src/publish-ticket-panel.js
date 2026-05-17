@@ -2,7 +2,7 @@ require('dotenv').config();
 
 const { Client, Events, GatewayIntentBits } = require('discord.js');
 const { getGuildSetup } = require('./lib/store');
-const { buildTicketPanelPayload } = require('./lib/interactions');
+const { buildTicketPanelPayload } = require('./lib/staticPanels');
 const { replacePanelMessage } = require('./lib/panelUtils');
 
 if (!process.env.DISCORD_TOKEN || !process.env.GUILD_ID) {
