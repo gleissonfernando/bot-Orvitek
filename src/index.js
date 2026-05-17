@@ -166,7 +166,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
       return;
     }
 
-    if (!isOwnerRole(interaction.member)) {
+    if (interaction.commandName !== 'ativar' && !isOwnerRole(interaction.member)) {
       await interaction.reply(privateReply('Apenas quem tem o cargo Dono pode usar comandos slash.'));
       return;
     }
