@@ -158,7 +158,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
       if (await handleModal(interaction)) return;
     }
 
-    if (interaction.isUserSelectMenu()) {
+    if (interaction.isUserSelectMenu() || interaction.isStringSelectMenu()) {
       if (await handleSelect(interaction)) return;
     }
 

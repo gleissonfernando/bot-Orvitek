@@ -7,6 +7,7 @@ const {
   EmbedBuilder,
   ModalBuilder,
   PermissionFlagsBits,
+  StringSelectMenuBuilder,
   TextInputBuilder,
   TextInputStyle,
   UserSelectMenuBuilder
@@ -462,20 +463,23 @@ function buildSystemPanelEmbed(guild) {
 function buildSystemPanelButtons() {
   return [
     new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId('panel_price_basic').setLabel('Editar Básico').setStyle(ButtonStyle.Secondary),
-      new ButtonBuilder().setCustomId('panel_price_premium').setLabel('Editar Premium').setStyle(ButtonStyle.Secondary),
-      new ButtonBuilder().setCustomId('panel_price_hosting').setLabel('Editar Hospedagem').setStyle(ButtonStyle.Secondary)
-    ),
-    new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId('panel_coupon_create').setLabel('Cadastrar Cupom').setStyle(ButtonStyle.Secondary),
-      new ButtonBuilder().setCustomId('panel_coupon_clear').setLabel('Remover Cupom').setStyle(ButtonStyle.Danger),
-      new ButtonBuilder().setCustomId('panel_hosting_paid').setLabel('Hospedagem paga').setStyle(ButtonStyle.Success),
-      new ButtonBuilder().setCustomId('panel_hosting_unpaid').setLabel('Hospedagem vencida').setStyle(ButtonStyle.Danger),
-      new ButtonBuilder().setCustomId('panel_toggle_promo').setLabel('Ativar/Desativar Promoção').setStyle(ButtonStyle.Success)
-    ),
-    new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId('panel_refresh_sales').setLabel('Republicar Painéis').setStyle(ButtonStyle.Primary),
-      new ButtonBuilder().setCustomId('panel_client_delete').setLabel('Apagar cadastro').setStyle(ButtonStyle.Danger)
+      new StringSelectMenuBuilder()
+        .setCustomId('panel_tools')
+        .setPlaceholder('Selecione uma ferramenta do painel')
+        .setMinValues(1)
+        .setMaxValues(1)
+        .addOptions(
+          { label: 'Editar Básico', value: 'panel_price_basic', description: 'Alterar o valor do plano Básico.' },
+          { label: 'Editar Premium', value: 'panel_price_premium', description: 'Alterar o valor do plano Premium.' },
+          { label: 'Editar Hospedagem', value: 'panel_price_hosting', description: 'Alterar o valor mensal da hospedagem.' },
+          { label: 'Cadastrar Cupom', value: 'panel_coupon_create', description: 'Criar ou atualizar o cupom ativo.' },
+          { label: 'Remover Cupom', value: 'panel_coupon_clear', description: 'Desativar o cupom atual.' },
+          { label: 'Hospedagem paga', value: 'panel_hosting_paid', description: 'Marcar hospedagem de cliente como paga.' },
+          { label: 'Hospedagem vencida', value: 'panel_hosting_unpaid', description: 'Marcar hospedagem de cliente como vencida.' },
+          { label: 'Ativar/Desativar Promoção', value: 'panel_toggle_promo', description: 'Alternar o status da promoção.' },
+          { label: 'Republicar Painéis', value: 'panel_refresh_sales', description: 'Atualizar painéis com os valores atuais.' },
+          { label: 'Apagar cadastro', value: 'panel_client_delete', description: 'Remover o cadastro de um cliente.' }
+        )
     )
   ];
 }
@@ -583,10 +587,10 @@ async function handleSetupButton(interaction) {
   return true;
 }
 
-async function handleSystemPanelButton(interaction, setup) {
+async function handleSystemPanelButton(interaction, setup, selectedTool = interaction.customId) {
   const settings = getSystemSettings(interaction.guild.id);
 
-  if (interaction.customId === 'panel_toggle_promo') {
+  if (selectedTool === 'panel_toggle_promo') {
     const active = !settings.retail.active;
     updateSystemSettings(interaction.guild.id, {
       retail: {
@@ -614,18 +618,18 @@ async function handleSystemPanelButton(interaction, setup) {
     return true;
   }
 
-  if (interaction.customId === 'panel_refresh_sales') {
+  if (selectedTool === 'panel_refresh_sales') {
     await publishSalesPanels(interaction.guild, setup);
     await safeReply(interaction, privateReply('Painéis republicados com os valores atuais.'));
     return true;
   }
 
-  if (interaction.customId === 'panel_coupon_clear') {
+  if (selectedTool === 'panel_coupon_clear') {
     await handleCouponClear(interaction, setup);
     return true;
   }
 
-  if (interaction.customId === 'panel_hosting_paid') {
+  if (selectedTool === 'panel_hosting_paid') {
     if (!isOwnerRole(interaction.member)) {
       await safeReply(interaction, privateReply('Apenas quem tem o cargo Dono pode usar este controle.'));
       return true;
@@ -635,7 +639,7 @@ async function handleSystemPanelButton(interaction, setup) {
     return true;
   }
 
-  if (interaction.customId === 'panel_hosting_unpaid') {
+  if (selectedTool === 'panel_hosting_unpaid') {
     if (!isOwnerRole(interaction.member)) {
       await safeReply(interaction, privateReply('Apenas quem tem o cargo Dono pode usar este controle.'));
       return true;
@@ -645,7 +649,7 @@ async function handleSystemPanelButton(interaction, setup) {
     return true;
   }
 
-  if (interaction.customId === 'panel_client_delete') {
+  if (selectedTool === 'panel_client_delete') {
     if (!isOwnerRole(interaction.member)) {
       await safeReply(interaction, privateReply('Apenas quem tem o cargo Dono pode apagar cadastros.'));
       return true;
@@ -662,7 +666,7 @@ async function handleSystemPanelButton(interaction, setup) {
     panel_coupon_create: buildCouponModal(settings.coupon)
   };
 
-  const modal = modalMap[interaction.customId];
+  const modal = modalMap[selectedTool];
   if (modal) {
     await interaction.showModal(modal);
     return true;
@@ -2408,6 +2412,11 @@ async function handleButton(interaction) {
     return true;
   }
 
+  if (interaction.customId === 'hosting_access_create') {
+    await handleHostingAccessCreateButton(interaction);
+    return true;
+  }
+
   const setup = getGuildSetup(interaction.guild.id);
   if (!setup) {
     await interaction.reply(privateReply('O servidor ainda não foi configurado com /ativar.'));
@@ -2434,11 +2443,6 @@ async function handleButton(interaction) {
 
   if (interaction.customId === 'contract_start') {
     await handleContractStart(interaction);
-    return true;
-  }
-
-  if (interaction.customId === 'hosting_access_create') {
-    await handleHostingAccessCreateButton(interaction);
     return true;
   }
 
@@ -2471,6 +2475,16 @@ async function handleButton(interaction) {
 }
 
 async function handleSelect(interaction) {
+  if (interaction.customId === 'panel_tools') {
+    const setup = getGuildSetup(interaction.guild.id);
+    if (!setup) {
+      await interaction.reply(privateReply('O servidor ainda não foi configurado com /ativar.'));
+      return true;
+    }
+
+    return handleSystemPanelButton(interaction, setup, interaction.values[0]);
+  }
+
   const setup = getGuildSetup(interaction.guild.id);
   if (!setup) {
     await interaction.reply(privateReply('O servidor ainda não foi configurado com /ativar.'));
@@ -2503,6 +2517,11 @@ async function handleModal(interaction) {
 
   if (interaction.customId.startsWith('project_deadline_submit:')) {
     await handleProjectDeadlineSubmit(interaction);
+    return true;
+  }
+
+  if (interaction.customId === 'hosting_access_create_submit') {
+    await handleHostingAccessCreateSubmit(interaction);
     return true;
   }
 
@@ -2539,11 +2558,6 @@ async function handleModal(interaction) {
 
   if (interaction.customId === 'panel_price_basic_submit' || interaction.customId === 'panel_price_premium_submit' || interaction.customId === 'panel_price_hosting_submit') {
     await handleSystemPanelSubmit(interaction, setup);
-    return true;
-  }
-
-  if (interaction.customId === 'hosting_access_create_submit') {
-    await handleHostingAccessCreateSubmit(interaction);
     return true;
   }
 
