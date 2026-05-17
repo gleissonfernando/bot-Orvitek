@@ -1,7 +1,18 @@
 const { PermissionFlagsBits } = require('discord.js');
 const { privateReply } = require('./replies');
 const { getGuildSetup } = require('./store');
-const { staffRoleKeys } = require('../config/setup');
+const { roleSpecs, staffRoleKeys } = require('../config/setup');
+
+function findConfiguredRole(member, key) {
+  const setup = getGuildSetup(member.guild.id);
+  const roleId = setup?.roles?.[key];
+  if (roleId && member.roles.cache.has(roleId)) {
+    return true;
+  }
+
+  const spec = roleSpecs.find((role) => role.key === key);
+  return Boolean(spec && member.roles.cache.some((role) => role.name === spec.name));
+}
 
 function isAdmin(member) {
   const adminRoleId = process.env.ADMIN_ROLE_ID;
@@ -18,15 +29,7 @@ function isStaff(member) {
     return true;
   }
 
-  const setup = getGuildSetup(member.guild.id);
-  if (!setup?.roles) {
-    return false;
-  }
-
-  return staffRoleKeys.some((key) => {
-    const roleId = setup.roles[key];
-    return roleId && member.roles.cache.has(roleId);
-  });
+  return staffRoleKeys.some((key) => findConfiguredRole(member, key));
 }
 
 function isOwnerRole(member) {
@@ -36,10 +39,7 @@ function isOwnerRole(member) {
     return member.roles.cache.has(configuredOwnerRoleId);
   }
 
-  const setup = getGuildSetup(member.guild.id);
-  const ownerRoleId = setup?.roles?.owner;
-
-  if (ownerRoleId && member.roles.cache.has(ownerRoleId)) {
+  if (findConfiguredRole(member, 'owner')) {
     return true;
   }
 

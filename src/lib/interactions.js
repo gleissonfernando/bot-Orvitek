@@ -13,7 +13,7 @@ const {
   UserSelectMenuBuilder
 } = require('discord.js');
 const crypto = require('node:crypto');
-const { colors, staffRoleKeys } = require('../config/setup');
+const { categories, colors, roleSpecs, staffRoleKeys } = require('../config/setup');
 const { isOwnerRole, isStaff } = require('./permissions');
 const { privateReply } = require('./replies');
 const {
@@ -80,6 +80,60 @@ function suppressPanelRestore(channelId, ttlMs = 10000) {
 
 function isUnknownInteraction(error) {
   return error?.code === 10062 || String(error?.message || '').includes('Unknown interaction');
+}
+
+function normalizeSetupName(name) {
+  return String(name || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/^[^\p{L}\p{N}]+/u, '')
+    .toLowerCase();
+}
+
+function findRoleBySetupName(guild, expectedName) {
+  const target = normalizeSetupName(expectedName);
+  return guild.roles.cache.find((role) => normalizeSetupName(role.name) === target) || null;
+}
+
+function findChannelBySetupName(guild, expectedName, oldName = null) {
+  const targets = [expectedName, oldName].filter(Boolean).map(normalizeSetupName);
+  return guild.channels.cache.find((channel) => targets.includes(normalizeSetupName(channel.name))) || null;
+}
+
+function buildGuildSetupFallback(guild) {
+  const roles = {};
+  for (const spec of roleSpecs) {
+    const role = findRoleBySetupName(guild, spec.name);
+    if (role) roles[spec.key] = role.id;
+  }
+
+  const channelMap = {};
+  const categoryMap = {};
+  for (const categorySpec of categories) {
+    const category = findChannelBySetupName(guild, categorySpec.name, categorySpec.oldName);
+    if (category) categoryMap[categorySpec.key] = category.id;
+
+    for (const channelSpec of categorySpec.channels) {
+      const channel = findChannelBySetupName(guild, channelSpec.name, channelSpec.oldName);
+      if (channel) channelMap[channelSpec.key] = channel.id;
+    }
+  }
+
+  if (!Object.keys(roles).length && !Object.keys(channelMap).length && !Object.keys(categoryMap).length) {
+    return null;
+  }
+
+  return {
+    roles,
+    channels: channelMap,
+    categories: categoryMap,
+    fallback: true
+  };
+}
+
+function resolveGuildSetup(guild) {
+  if (!guild) return null;
+  return getGuildSetup(guild.id) || buildGuildSetupFallback(guild);
 }
 
 async function safeReply(interaction, payload) {
@@ -380,7 +434,7 @@ function buildProjectDeadlinePanel(queueEntry) {
 }
 
 function buildSystemPanelEmbed(guild) {
-  const setup = getGuildSetup(guild.id);
+  const setup = resolveGuildSetup(guild);
   const settings = getSystemSettings(guild.id);
   const clients = listClients(guild.id, null);
   const hostingPending = clients.filter((client) => client.hostingPaymentStatus === 'awaiting_review').length;
@@ -2130,7 +2184,7 @@ async function handleAccessUnlockSubmit(interaction) {
     return true;
   }
 
-  const setup = getGuildSetup(guild.id);
+  const setup = resolveGuildSetup(guild);
   const projectChannelId = queueEntry.projectChannelId || channelId;
   const channel = await guild.channels.fetch(projectChannelId).catch(() => null);
   if (!setup || !channel?.isTextBased()) {
@@ -2319,7 +2373,7 @@ async function restoreStaticPanel(guild, channelId, options = {}) {
     return false;
   }
 
-  const setup = getGuildSetup(guild.id);
+  const setup = resolveGuildSetup(guild);
   if (!setup) {
     return false;
   }
@@ -2417,7 +2471,7 @@ async function handleButton(interaction) {
     return true;
   }
 
-  const setup = getGuildSetup(interaction.guild.id);
+  const setup = resolveGuildSetup(interaction.guild);
   if (!setup) {
     await interaction.reply(privateReply('O servidor ainda não foi configurado com /ativar.'));
     return true;
@@ -2476,7 +2530,7 @@ async function handleButton(interaction) {
 
 async function handleSelect(interaction) {
   if (interaction.customId === 'panel_tools') {
-    const setup = getGuildSetup(interaction.guild.id);
+    const setup = resolveGuildSetup(interaction.guild);
     if (!setup) {
       await interaction.reply(privateReply('O servidor ainda não foi configurado com /ativar.'));
       return true;
@@ -2485,7 +2539,7 @@ async function handleSelect(interaction) {
     return handleSystemPanelButton(interaction, setup, interaction.values[0]);
   }
 
-  const setup = getGuildSetup(interaction.guild.id);
+  const setup = resolveGuildSetup(interaction.guild);
   if (!setup) {
     await interaction.reply(privateReply('O servidor ainda não foi configurado com /ativar.'));
     return true;
@@ -2525,7 +2579,7 @@ async function handleModal(interaction) {
     return true;
   }
 
-  const setup = getGuildSetup(interaction.guild.id);
+  const setup = resolveGuildSetup(interaction.guild);
   if (!setup) {
     await interaction.reply(privateReply('O servidor ainda não foi configurado com /ativar.'));
     return true;

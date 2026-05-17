@@ -20,6 +20,9 @@ if (!process.env.DISCORD_TOKEN) {
   throw new Error('Configure DISCORD_TOKEN no arquivo .env.');
 }
 
+const LIFECYCLE_LOG_CHANNEL_ID = process.env.LIFECYCLE_LOG_CHANNEL_ID || '1505195775381209188';
+let shuttingDown = false;
+
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
@@ -47,10 +50,46 @@ async function sendLog(guild, channelKey, embed) {
   }
 }
 
-client.once(Events.ClientReady, (readyClient) => {
+async function sendLifecycleLog(readyClient, title, description, color) {
+  const channel = await readyClient.channels.fetch(LIFECYCLE_LOG_CHANNEL_ID).catch(() => null);
+  if (!channel?.isTextBased()) return;
+
+  await channel.send({
+    embeds: [
+      new EmbedBuilder()
+        .setColor(color)
+        .setTitle(title)
+        .setDescription(description)
+        .addFields(
+          { name: 'Bot', value: readyClient.user?.tag || 'desconhecido', inline: true },
+          { name: 'Horário', value: `<t:${Math.floor(Date.now() / 1000)}:F>`, inline: true }
+        )
+        .setTimestamp()
+    ]
+  }).catch(() => null);
+}
+
+async function shutdown(signal) {
+  if (shuttingDown) return;
+  shuttingDown = true;
+
+  console.log(`Encerrando bot por ${signal}.`);
+  if (client.isReady()) {
+    await sendLifecycleLog(client, 'Bot desligado', `O processo recebeu ${signal} e está sendo encerrado.`, colors.red);
+  }
+
+  client.destroy();
+  process.exit(0);
+}
+
+client.once(Events.ClientReady, async (readyClient) => {
   console.log(`Bot conectado como ${readyClient.user.tag}.`);
+  await sendLifecycleLog(readyClient, 'Bot ligado', 'O bot foi iniciado e está online.', colors.default);
   startSchedulers(readyClient);
 });
+
+process.once('SIGINT', () => shutdown('SIGINT'));
+process.once('SIGTERM', () => shutdown('SIGTERM'));
 
 client.on(Events.GuildMemberAdd, async (member) => {
   const setup = getGuildSetup(member.guild.id);
