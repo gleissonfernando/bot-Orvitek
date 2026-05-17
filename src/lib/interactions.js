@@ -70,6 +70,7 @@ const { buildRenewPanelPayload, buildSuggestionsPanelPayload, buildTicketPanelPa
 
 const PROJECT_ACCESS_CATEGORY_ID = process.env.PROJECT_ACCESS_CATEGORY_ID || '1505195763469127770';
 const HOSTING_LOG_CHANNEL_ID = process.env.HOSTING_LOG_CHANNEL_ID || '1505275946721087730';
+const TICKET_ALERT_ROLE_ID = process.env.TICKET_ALERT_ROLE_ID || '1505184193766752386';
 const PAYMENT_REJECT_DELETE_MS = 3 * 60 * 60 * 1000;
 
 const restoreSuppression = new Set();
@@ -1207,8 +1208,17 @@ async function openTicket(interaction, setup, type, reason = null) {
     });
   }
 
+  const ticketMentions = [`<@${interaction.user.id}>`];
+  if (TICKET_ALERT_ROLE_ID) {
+    ticketMentions.push(`<@&${TICKET_ALERT_ROLE_ID}>`);
+  }
+
   await channel.send({
-    content: `<@${interaction.user.id}>`,
+    content: ticketMentions.join(' '),
+    allowedMentions: {
+      users: [interaction.user.id],
+      roles: TICKET_ALERT_ROLE_ID ? [TICKET_ALERT_ROLE_ID] : []
+    },
     embeds: [
       (() => {
         const embed = new EmbedBuilder()
