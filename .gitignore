@@ -1,0 +1,34 @@
+# Dependencies
+node_modules/
+
+# Environment files / secrets
+.env
+.env.*
+!.env.example
+
+# Local app data
+*.sqlite
+*.sqlite3
+data/*.json
+data/contracts/
+!data/.gitkeep
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Build / cache / coverage
+dist/
+build/
+coverage/
+.cache/
+.parcel-cache/
+
+# OS / editor files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
