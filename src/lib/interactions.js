@@ -538,6 +538,61 @@ function buildSystemPanelButtons() {
   ];
 }
 
+function buildTicketPanelPayload() {
+  return {
+    embeds: [
+      new EmbedBuilder()
+        .setColor(colors.blue)
+        .setTitle('Central de Suporte')
+        .setDescription(
+          'Precisa de ajuda? Abra um ticket e nossa equipe irá atendê-lo em breve.\n\n' +
+            'Horario de atendimento: Seg-Sex, 9h-18h\nDescreva seu problema com detalhes para um atendimento mais rapido.'
+        )
+    ],
+    components: [
+      new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId('ticket_bug').setLabel('Reportar Bug').setStyle(ButtonStyle.Danger),
+        new ButtonBuilder().setCustomId('ticket_payment').setLabel('Problema com Pagamento').setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId('ticket_question').setLabel('Duvida Geral').setStyle(ButtonStyle.Primary),
+        new ButtonBuilder().setCustomId('ticket_technical').setLabel('Suporte Tecnico').setStyle(ButtonStyle.Primary)
+      )
+    ]
+  };
+}
+
+function buildRenewPanelPayload() {
+  return {
+    embeds: [
+      new EmbedBuilder()
+        .setColor(colors.orange)
+        .setTitle('Renovação de Plano')
+        .setDescription('Seu plano expirou ou está prestes a vencer. Renove agora para não perder o acesso!\n\nClientes com plano expirado têm acesso limitado ao servidor.')
+    ],
+    components: [
+      new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId('renew_now').setLabel('Renovar Agora').setStyle(ButtonStyle.Success),
+        new ButtonBuilder().setCustomId('renew_check').setLabel('Já renovei, verificar acesso').setStyle(ButtonStyle.Secondary)
+      )
+    ]
+  };
+}
+
+function buildSuggestionsPanelPayload() {
+  return {
+    embeds: [
+      new EmbedBuilder()
+        .setColor(colors.purple)
+        .setTitle('Caixa de Sugestões')
+        .setDescription('Tem uma ideia para melhorar nosso produto ou servidor? Compartilhe com a gente!')
+    ],
+    components: [
+      new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId('suggestion_open').setLabel('Enviar Sugestão').setStyle(ButtonStyle.Primary)
+      )
+    ]
+  };
+}
+
 function buildPriceModal(customId, label, value) {
   const modal = new ModalBuilder().setCustomId(customId).setTitle(`Editar ${label}`);
   const input = new TextInputBuilder()
@@ -578,6 +633,38 @@ async function publishSalesPanels(guild, setup, options = {}) {
       components: buildPlansButtons()
     }).catch(() => null);
   }
+}
+
+async function replaceConfiguredPanel(guild, channelId, payload) {
+  if (!channelId) return false;
+
+  const channel = await guild.channels.fetch(channelId).catch(() => null);
+  if (!channel?.isTextBased()) return false;
+
+  await replacePanelMessage(channel, payload).catch(() => null);
+  return true;
+}
+
+async function publishAllConfiguredPanels(guild, setup) {
+  const settings = getSystemSettings(guild.id);
+  let published = 0;
+
+  if (await replaceConfiguredPanel(guild, setup.channels?.verify, buildVerificationPanel())) published += 1;
+  if (await replaceConfiguredPanel(guild, setup.channels?.rules, { embeds: buildServerRulesEmbeds() })) published += 1;
+  if (await replaceConfiguredPanel(guild, setup.channels?.howItWorks, { embeds: buildHowItWorksEmbeds() })) published += 1;
+  if (await replaceConfiguredPanel(guild, setup.channels?.supportRules, { embeds: buildSupportRulesEmbeds() })) published += 1;
+  if (await replaceConfiguredPanel(guild, setup.channels?.plans, { embeds: buildPlansEmbeds({ settings }) })) published += 1;
+  if (
+    await replaceConfiguredPanel(guild, setup.channels?.buyNow, {
+      embeds: [buildPlansEmbeds({ settings })[0]],
+      components: buildPlansButtons()
+    })
+  ) published += 1;
+  if (await replaceConfiguredPanel(guild, setup.channels?.promotions, { embeds: [buildPromotionEmbed(settings.retail.active)] })) published += 1;
+  if (await replaceConfiguredPanel(guild, setup.channels?.openTicket, buildTicketPanelPayload())) published += 1;
+  if (await replaceConfiguredPanel(guild, setup.channels?.renewPlan, buildRenewPanelPayload())) published += 1;
+  if (await replaceConfiguredPanel(guild, setup.channels?.suggestions, buildSuggestionsPanelPayload())) published += 1;
+  return published;
 }
 
 function buildTicketActions(type, contractSigned = false, couponAvailable = false) {
@@ -673,8 +760,8 @@ async function handleSystemPanelButton(interaction, setup, selectedTool = intera
   }
 
   if (selectedTool === 'panel_refresh_sales') {
-    await publishSalesPanels(interaction.guild, setup);
-    await safeReply(interaction, privateReply('Painéis republicados com os valores atuais.'));
+    const published = await publishAllConfiguredPanels(interaction.guild, setup);
+    await safeReply(interaction, privateReply(`Painéis republicados: ${published}.`));
     return true;
   }
 
@@ -2394,6 +2481,11 @@ async function restoreStaticPanel(guild, channelId, options = {}) {
     return true;
   }
 
+  if (setup.channels?.openTicket === channelId) {
+    await replacePanelMessage(channel, buildTicketPanelPayload()).catch(() => null);
+    return true;
+  }
+
   if (setup.channels?.rules === channelId) {
     await replacePanelMessage(channel, { embeds: buildServerRulesEmbeds() }).catch(() => null);
     return true;
@@ -2421,6 +2513,16 @@ async function restoreStaticPanel(guild, channelId, options = {}) {
 
   if (setup.channels?.promotions === channelId) {
     await replacePanelMessage(channel, { embeds: [buildPromotionEmbed(settings.retail.active)] }).catch(() => null);
+    return true;
+  }
+
+  if (setup.channels?.renewPlan === channelId) {
+    await replacePanelMessage(channel, buildRenewPanelPayload()).catch(() => null);
+    return true;
+  }
+
+  if (setup.channels?.suggestions === channelId) {
+    await replacePanelMessage(channel, buildSuggestionsPanelPayload()).catch(() => null);
     return true;
   }
 
@@ -2624,6 +2726,7 @@ async function handleModal(interaction) {
 }
 
 module.exports = {
+  buildTicketPanelPayload,
   handleButton,
   handleSelect,
   handleModal,
