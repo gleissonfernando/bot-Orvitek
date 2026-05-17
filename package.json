@@ -1,0 +1,22 @@
+{
+  "name": "bot-vendas-discord",
+  "version": "1.0.0",
+  "description": "Bot de Discord para gerenciar vendas de bots.",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "deploy": "node src/deploy-commands.js",
+    "check": "node --check src/index.js && node --check src/deploy-commands.js && node --check src/sync-channel-emojis.js && node --check src/sync-setup-roles.js && node --check src/publish-verification-panel.js && node --check src/publish-support-rules.js && node --check src/publish-server-rules.js && node --check src/publish-how-it-works.js && node --check src/publish-plans.js && node --check src/commands/ativar.js && node --check src/commands/setupCommands.js && node --check src/lib/store.js && node --check src/lib/permissions.js && node --check src/lib/interactions.js && node --check src/lib/setupRunner.js && node --check src/lib/supportRules.js && node --check src/lib/serverRules.js && node --check src/lib/howItWorks.js && node --check src/lib/plans.js && node --check src/lib/verificationPanel.js && node --check src/lib/dmPanels.js && node --check src/lib/contracts.js && node --check src/lib/welcome.js"
+  },
+  "keywords": [
+    "discord",
+    "bot",
+    "vendas"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "discord.js": "^14.15.3",
+    "dotenv": "^16.4.5",
+    "pdfkit": "^0.18.0"
+  }
+}
