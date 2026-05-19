@@ -258,7 +258,7 @@ async function removeConfiguredRole(member, setup, key, fallbackName) {
 }
 
 function purchaseTypes(type) {
-  return ['plan_basic', 'plan_pro', 'plan_lifetime', 'plan_paid'].includes(type);
+  return ['plan_basic', 'plan_pro', 'plan_lifetime', 'plan_paid', 'plan_order'].includes(type);
 }
 
 function brl(value) {
