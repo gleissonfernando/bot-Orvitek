@@ -5,6 +5,7 @@ const commands = require('./commands/setupCommands');
 const { colors } = require('./config/setup');
 const {
   handleButton,
+  handlePurchaseReceiptMessage,
   handleSelect,
   handleModal,
   publishHostingReminder,
@@ -148,7 +149,10 @@ client.on(Events.GuildMemberRemove, async (member) => {
 client.on(Events.MessageCreate, async (message) => {
   if (!message.guild || message.author.bot) return;
 
-  const setup = getGuildSetup(message.guild.id);
+  if (await handlePurchaseReceiptMessage(message)) {
+    return;
+  }
+
   const forbiddenWords = (process.env.BAD_WORDS || 'palavrao').split(',').map((word) => word.trim().toLowerCase()).filter(Boolean);
   const hasBadWord = forbiddenWords.some((word) => message.content.toLowerCase().includes(word));
   const repeated = /(.)\1{8,}/.test(message.content);

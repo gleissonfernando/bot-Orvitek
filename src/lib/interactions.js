@@ -623,12 +623,41 @@ function buildPurchaseTicketEmbed({ user, planLabel, pricing, couponCode, coupon
       { name: 'Forma de pagamento', value: pricing.paymentLabel || 'não informada', inline: true },
       { name: 'Valor final', value: brl(pricing.finalPrice), inline: true },
       { name: 'Status', value: 'Aguardando pagamento', inline: true },
+      { name: 'Comprovante', value: 'Envie a imagem do pagamento neste canal.', inline: false },
       ...splitFields,
       ...(invalidCoupon
         ? [{ name: 'Aviso', value: `O cupom **${couponCode}** não foi aplicado porque é inválido.` }]
         : [])
     )
     .setTimestamp();
+}
+
+function buildPurchaseReceiptEmbed({ user, ticket, queueEntry, attachments, content }) {
+  const attachment = attachments?.[0] || null;
+  const embed = new EmbedBuilder()
+    .setColor(colors.default)
+    .setTitle('Comprovante recebido')
+    .setDescription('O comprovante foi anexado ao ticket e a equipe já pode conferir a compra.')
+    .addFields(
+      { name: 'Cliente', value: `${user.tag} (\`${user.id}\`)`, inline: true },
+      { name: 'Plano', value: queueEntry?.planLabel || ticket?.type || 'não informado', inline: true },
+      { name: 'Pagamento', value: queueEntry?.paymentLabel || 'não informado', inline: true },
+      { name: 'Cupom', value: queueEntry?.couponCode || 'Nenhum', inline: true },
+      { name: 'Total', value: queueEntry?.finalValue ? brl(queueEntry.finalValue) : 'não informado', inline: true }
+    )
+    .setTimestamp();
+
+  if (attachment?.url) {
+    if (String(attachment.contentType || '').startsWith('image/')) {
+      embed.setImage(attachment.url);
+    }
+
+    embed.addFields({ name: 'Arquivo', value: `[${attachment.name || 'comprovante'}](${attachment.url})`, inline: false });
+  } else if (content) {
+    embed.addFields({ name: 'Conteúdo', value: content.slice(0, 1000), inline: false });
+  }
+
+  return embed;
 }
 
 function generateAccessPassword() {
@@ -1654,10 +1683,11 @@ async function openTicket(interaction, setup, type, reason = null) {
 
 async function openPurchaseOrderTicket(interaction, setup, session, pricing, couponCode = null, invalidCoupon = false) {
   const username = channelSafe(interaction.user.username);
-  const planMeta = getPurchasePlanMeta(session.planType);
-  const channelName = `compra-${planMeta?.slug || 'plano'}-${username}`.slice(0, 90);
+  const channelBaseName = `compra-${username}`.slice(0, 80);
   const existing = interaction.guild.channels.cache.find(
-    (channel) => channel.name === channelName && channel.type === ChannelType.GuildText
+    (channel) =>
+      channel.type === ChannelType.GuildText &&
+      (channel.name === channelBaseName || channel.name.startsWith(`${channelBaseName}-`))
   );
 
   if (existing) {
@@ -1672,7 +1702,7 @@ async function openPurchaseOrderTicket(interaction, setup, session, pricing, cou
 
   const supportCategoryId = setup.categories.supportCategory;
   const channel = await interaction.guild.channels.create({
-    name: channelName,
+    name: channelBaseName,
     type: ChannelType.GuildText,
     parent: supportCategoryId || null,
     permissionOverwrites: [
@@ -1694,6 +1724,11 @@ async function openPurchaseOrderTicket(interaction, setup, session, pricing, cou
     type: 'plan_order'
   });
 
+  const channelName = `compra-${username}-${String(ticket.id).padStart(3, '0')}`.slice(0, 90);
+  if (channel.name !== channelName) {
+    await channel.setName(channelName).catch(() => null);
+  }
+
   const paymentLabel = SALE_PAYMENT_METHODS[session.paymentMethod]?.label || 'não informada';
   const ticketPricing = {
     ...pricing,
@@ -1714,6 +1749,25 @@ async function openPurchaseOrderTicket(interaction, setup, session, pricing, cou
     finalValue: Number(pricing.finalPrice || 0),
     splitEntry: Number(pricing.paymentSplitEntry || pricing.finalPrice || 0),
     splitRemaining: Number(pricing.paymentSplitRemaining || 0)
+  });
+
+  upsertQueueEntry(channel.id, {
+    guildId: interaction.guild.id,
+    ownerId: interaction.user.id,
+    ownerTag: interaction.user.tag,
+    planType: session.planType,
+    planLabel: session.planLabel,
+    paymentMethod: session.paymentMethod || null,
+    paymentLabel,
+    couponCode: couponCode || null,
+    couponApplied: Boolean(pricing.couponValid),
+    couponValid: Boolean(pricing.couponValid),
+    couponPercent: pricing.couponValid ? Number(pricing.couponDiscount || 0) : 0,
+    originalValue: Number(pricing.basePrice || 0),
+    finalValue: Number(pricing.finalPrice || 0),
+    splitEntry: Number(pricing.paymentSplitEntry || pricing.finalPrice || 0),
+    splitRemaining: Number(pricing.paymentSplitRemaining || 0),
+    status: 'awaiting_payment'
   });
 
   const ticketMentions = [`<@${interaction.user.id}>`];
@@ -1739,6 +1793,23 @@ async function openPurchaseOrderTicket(interaction, setup, session, pricing, cou
     ],
     components: buildTicketActions('plan_order', false, false)
   });
+
+  await channel.send({
+    embeds: [
+      new EmbedBuilder()
+        .setColor(colors.gold)
+        .setTitle('Próximo passo')
+        .setDescription(
+          'Envie agora a imagem do comprovante neste canal.\n\n' +
+            'Quando o arquivo chegar, a equipe vai validar o pagamento e continuar o atendimento.'
+        )
+        .addFields(
+          { name: 'Forma de pagamento', value: paymentLabel, inline: true },
+          { name: 'Plano', value: session.planLabel || 'não informado', inline: true }
+        )
+        .setTimestamp()
+    ]
+  }).catch(() => null);
 
   const message = invalidCoupon
     ? `Pedido criado: ${channel}. O cupom informado não foi aplicado porque é inválido.`
@@ -1775,6 +1846,57 @@ async function openPurchaseOrderTicket(interaction, setup, session, pricing, cou
       components: []
     }));
   }
+}
+
+async function handlePurchaseReceiptMessage(message) {
+  const ticket = getTicketByChannel(message.channel.id);
+  if (!ticket || !purchaseTypes(ticket.type)) {
+    return false;
+  }
+
+  if (message.author.id !== ticket.ownerId) {
+    return false;
+  }
+
+  const hasAttachment = message.attachments?.size > 0;
+  if (!hasAttachment) {
+    return false;
+  }
+
+  const queueEntry = getQueueEntry(message.channel.id) || {};
+  const attachment = message.attachments.first();
+  const receiptEmbed = buildPurchaseReceiptEmbed({
+    user: message.author,
+    ticket,
+    queueEntry,
+    attachments: Array.from(message.attachments.values()),
+    content: message.content
+  });
+
+  updateTicket(message.channel.id, {
+    paymentReceiptUrl: attachment?.url || null,
+    paymentReceiptName: attachment?.name || null,
+    paymentReceiptMessageId: message.id,
+    paymentReceiptAt: new Date().toISOString()
+  });
+
+  upsertQueueEntry(message.channel.id, {
+    paymentReceiptUrl: attachment?.url || null,
+    paymentReceiptName: attachment?.name || null,
+    paymentReceiptMessageId: message.id,
+    paymentReceiptAt: new Date().toISOString()
+  });
+
+  await message.channel.send({
+    content: TICKET_ALERT_ROLE_ID ? `<@${message.author.id}> <@&${TICKET_ALERT_ROLE_ID}>` : `<@${message.author.id}>`,
+    allowedMentions: {
+      users: [message.author.id],
+      roles: TICKET_ALERT_ROLE_ID ? [TICKET_ALERT_ROLE_ID] : []
+    },
+    embeds: [receiptEmbed]
+  }).catch(() => null);
+
+  return true;
 }
 
 async function handleTicketAction(interaction, setup) {
@@ -3433,6 +3555,7 @@ module.exports = {
   restoreDeletedPanel,
   restoreStaticPanel,
   resolveConfiguredRole,
+  handlePurchaseReceiptMessage,
   suppressPanelRestore,
   sendRatingRequest
 };
