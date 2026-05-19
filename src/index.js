@@ -97,11 +97,19 @@ process.once('SIGTERM', () => shutdown('SIGTERM'));
 client.on(Events.GuildMemberAdd, async (member) => {
   const setup = getGuildSetup(member.guild.id);
   const verifyChannel = await resolveConfiguredChannel(member.guild, setup, 'verify');
-  const announcementsChannel =
-    (await resolveConfiguredChannel(member.guild, setup, 'announcements')) ||
-    (process.env.WELCOME_CHANNEL_ID
-      ? await member.guild.channels.fetch(process.env.WELCOME_CHANNEL_ID).catch(() => null)
-      : null);
+  const announcementTargets = [];
+  const configuredAnnouncements = await resolveConfiguredChannel(member.guild, setup, 'announcements');
+  const systemChannel = member.guild.systemChannel;
+  const envWelcomeChannel = process.env.WELCOME_CHANNEL_ID
+    ? await member.guild.channels.fetch(process.env.WELCOME_CHANNEL_ID).catch(() => null)
+    : null;
+  const generalLogsChannel = await resolveConfiguredChannel(member.guild, setup, 'generalLogs');
+
+  for (const channel of [configuredAnnouncements, systemChannel, envWelcomeChannel, generalLogsChannel]) {
+    if (channel?.isTextBased() && !announcementTargets.some((existing) => existing.id === channel.id)) {
+      announcementTargets.push(channel);
+    }
+  }
 
   const unverifiedRole = await resolveConfiguredRole(member.guild, setup, 'unverified', 'Não Verificado');
   if (unverifiedRole) {
@@ -114,11 +122,22 @@ client.on(Events.GuildMemberAdd, async (member) => {
     })
     .catch((error) => console.warn(`Nao foi possivel enviar DM para ${member.user.tag}: ${error.message}`));
 
-  if (announcementsChannel?.isTextBased()) {
-    await announcementsChannel.send({ embeds: [buildWelcomeChannelEmbed(member, verifyChannel?.id)] }).catch((error) => {
-      console.warn(`Nao foi possivel enviar mensagem de entrada em ${announcementsChannel.name}: ${error.message}`);
-    });
-  } else {
+  let announced = false;
+  for (const channel of announcementTargets) {
+    announced = await channel
+      .send({ embeds: [buildWelcomeChannelEmbed(member, verifyChannel?.id)] })
+      .then(() => true)
+      .catch((error) => {
+        console.warn(`Nao foi possivel enviar mensagem de entrada em ${channel.name}: ${error.message}`);
+        return false;
+      });
+
+    if (announced) {
+      break;
+    }
+  }
+
+  if (!announced) {
     console.warn(`Canal de anuncios nao encontrado para boas-vindas no servidor ${member.guild.id}.`);
   }
 });

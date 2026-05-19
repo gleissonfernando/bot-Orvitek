@@ -1361,18 +1361,20 @@ function buildHostingAccessCreateModal() {
     .setMaxLength(100);
   const password = new TextInputBuilder()
     .setCustomId('password')
-    .setLabel('Senha de acesso')
+    .setLabel('Senha de acesso (4 números)')
     .setStyle(TextInputStyle.Short)
     .setRequired(true)
-    .setMinLength(8)
-    .setMaxLength(64);
+    .setMinLength(4)
+    .setMaxLength(4)
+    .setPlaceholder('Ex: 1234');
   const confirmPassword = new TextInputBuilder()
     .setCustomId('confirmPassword')
-    .setLabel('Confirmar senha')
+    .setLabel('Confirmar senha (4 números)')
     .setStyle(TextInputStyle.Short)
     .setRequired(true)
-    .setMinLength(8)
-    .setMaxLength(64);
+    .setMinLength(4)
+    .setMaxLength(4)
+    .setPlaceholder('Ex: 1234');
 
   modal.addComponents(new ActionRowBuilder().addComponents(botName));
   modal.addComponents(new ActionRowBuilder().addComponents(password));
@@ -2815,8 +2817,13 @@ async function handleHostingAccessCreateSubmit(interaction) {
   const password = interaction.fields.getTextInputValue('password').trim();
   const confirmPassword = interaction.fields.getTextInputValue('confirmPassword').trim();
 
-  if (password.length < 8) {
-    await interaction.editReply('A senha precisa ter no mínimo 8 caracteres.');
+  if (!/^\d{4}$/.test(password)) {
+    await interaction.editReply('A senha precisa ter exatamente 4 números.');
+    return true;
+  }
+
+  if (!/^\d{4}$/.test(confirmPassword)) {
+    await interaction.editReply('A confirmação da senha precisa ter exatamente 4 números.');
     return true;
   }
 
@@ -2942,11 +2949,12 @@ async function handleAccessUnlockButton(interaction) {
     .setValue(String(queueEntry.accessKey || ''));
   const password = new TextInputBuilder()
     .setCustomId('password')
-    .setLabel('Senha de acesso')
+    .setLabel('Senha de acesso (4 números)')
     .setStyle(TextInputStyle.Short)
     .setRequired(true)
-    .setMinLength(8)
-    .setMaxLength(64);
+    .setMinLength(4)
+    .setMaxLength(4)
+    .setPlaceholder('Ex: 1234');
 
   modal.addComponents(new ActionRowBuilder().addComponents(key));
   modal.addComponents(new ActionRowBuilder().addComponents(password));
@@ -2966,8 +2974,8 @@ async function handleAccessUnlockSubmit(interaction) {
   const key = interaction.fields.getTextInputValue('key').trim();
   const password = interaction.fields.getTextInputValue('password').trim();
 
-  if (password.length < 8) {
-    await interaction.reply({ content: 'A senha precisa ter no mínimo 8 caracteres.' });
+  if (!/^\d{4}$/.test(password)) {
+    await interaction.reply({ content: 'A senha precisa ter exatamente 4 números.' });
     return true;
   }
 
