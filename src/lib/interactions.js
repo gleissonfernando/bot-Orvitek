@@ -439,6 +439,12 @@ function buildPurchaseFormPayload(session = {}, settings = null) {
 
   const summaryFields = showSummary
     ? [
+        ...(state.projectName
+          ? [
+              { name: 'Projeto', value: state.projectName, inline: true },
+              { name: 'Observações', value: state.projectDetails || 'Nenhuma', inline: true }
+            ]
+          : []),
         { name: 'Plano selecionado', value: `${pricing.plan.label}\n${brl(pricing.basePrice)}`, inline: true },
         {
           name: 'Cupom aplicado',
@@ -479,7 +485,8 @@ function buildPurchaseFormPayload(session = {}, settings = null) {
         .setColor(hasPlan ? (pricing.couponValid ? colors.default : colors.red) : 0x7c6bff)
         .setTitle('Novo Pedido')
         .setDescription(
-          'Selecione o plano, escolha a forma de pagamento e, se quiser, informe um cupom.\n' +
+          `${state.projectName ? `Projeto: **${state.projectName}**\n` : ''}` +
+            'Selecione o plano, escolha a forma de pagamento e, se quiser, informe um cupom.\n' +
             'O resumo atualiza em tempo real neste painel.\n\n' +
             couponNotice
         )
@@ -596,6 +603,35 @@ function buildPurchaseCouponModal() {
     .setMaxLength(20);
 
   modal.addComponents(new ActionRowBuilder().addComponents(coupon));
+  return modal;
+}
+
+function buildPurchaseIntroModal() {
+  const modal = new ModalBuilder()
+    .setCustomId('buy_plan_intro_submit')
+    .setTitle('Abertura do pedido');
+
+  const projectName = new TextInputBuilder()
+    .setCustomId('project_name')
+    .setLabel('Nome do projeto ou bot')
+    .setStyle(TextInputStyle.Short)
+    .setRequired(true)
+    .setPlaceholder('Ex: Bot de vendas da Loja X')
+    .setMaxLength(80);
+
+  const details = new TextInputBuilder()
+    .setCustomId('project_details')
+    .setLabel('Observações do pedido')
+    .setStyle(TextInputStyle.Paragraph)
+    .setRequired(false)
+    .setPlaceholder('Ex: integração com ticket, painel e automação')
+    .setMaxLength(300);
+
+  modal.addComponents(
+    new ActionRowBuilder().addComponents(projectName),
+    new ActionRowBuilder().addComponents(details)
+  );
+
   return modal;
 }
 
@@ -3234,7 +3270,7 @@ async function handleButton(interaction) {
 
   if (interaction.customId === 'buy_plan_open') {
     clearPurchaseSession(interaction.guild.id, interaction.user.id);
-    await safeReply(interaction, privateReply(buildPurchaseStartPayload(getSystemSettings(interaction.guild.id))));
+    await interaction.showModal(buildPurchaseIntroModal());
     return true;
   }
 
@@ -3545,6 +3581,26 @@ async function handleModal(interaction) {
 
   if (interaction.customId === 'panel_price_complete_submit') {
     await handleSystemPanelSubmit(interaction, setup);
+    return true;
+  }
+
+  if (interaction.customId === 'buy_plan_intro_submit') {
+    const projectName = interaction.fields.getTextInputValue('project_name').trim();
+    const projectDetails = interaction.fields.getTextInputValue('project_details').trim();
+
+    if (!projectName) {
+      await interaction.reply(privateReply('Informe o nome do projeto ou bot.'));
+      return true;
+    }
+
+    savePurchaseSession(interaction.guild.id, interaction.user.id, {
+      ...(getPurchaseSession(interaction.guild.id, interaction.user.id) || {}),
+      projectName,
+      projectDetails: projectDetails || null,
+      introSubmittedAt: new Date().toISOString()
+    });
+
+    await interaction.reply(privateReply(buildPurchaseStartPayload(getSystemSettings(interaction.guild.id))));
     return true;
   }
 
