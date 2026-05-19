@@ -619,14 +619,6 @@ function buildPurchaseIntroModal() {
     .setPlaceholder('Ex: Bot de vendas da Loja X')
     .setMaxLength(80);
 
-  const planChoice = new TextInputBuilder()
-    .setCustomId('plan_choice')
-    .setLabel('Plano desejado')
-    .setStyle(TextInputStyle.Short)
-    .setRequired(true)
-    .setPlaceholder('Básico, Premium ou Completo')
-    .setMaxLength(20);
-
   const details = new TextInputBuilder()
     .setCustomId('project_details')
     .setLabel('Observações do pedido')
@@ -637,32 +629,33 @@ function buildPurchaseIntroModal() {
 
   modal.addComponents(
     new ActionRowBuilder().addComponents(projectName),
-    new ActionRowBuilder().addComponents(planChoice),
     new ActionRowBuilder().addComponents(details)
   );
 
   return modal;
 }
 
-function normalizePurchasePlanChoice(input) {
-  const normalized = String(input || '').trim().toLowerCase();
-  if (!normalized) {
-    return null;
-  }
-
-  if (normalized.includes('basico') || normalized.includes('básico') || normalized === 'basic') {
-    return 'plan_basic';
-  }
-
-  if (normalized.includes('premium') || normalized === 'pro') {
-    return 'plan_premium';
-  }
-
-  if (normalized.includes('completo') || normalized === 'complete' || normalized === 'lifetime') {
-    return 'plan_lifetime';
-  }
-
-  return null;
+function buildPurchasePlanSelectPayload() {
+  return privateReply({
+    embeds: [
+      new EmbedBuilder()
+        .setColor(0x7c6bff)
+        .setTitle('Escolha o plano')
+        .setDescription('Selecione o plano abaixo. Depois disso o bot vai abrir o formulário do pedido.')
+    ],
+    components: [
+      new ActionRowBuilder().addComponents(
+        new StringSelectMenuBuilder()
+          .setCustomId('buy_plan_plan_select')
+          .setPlaceholder('Selecione o plano')
+          .addOptions([
+            { label: 'Plano Básico', value: 'plan_basic', description: 'Ideal para começar.' },
+            { label: 'Plano Premium', value: 'plan_premium', description: 'Sistema completo com recursos avançados.' },
+            { label: 'Plano Completo', value: 'plan_lifetime', description: 'Acesso permanente e entrega profissional.' }
+          ])
+      )
+    ]
+  });
 }
 
 function buildPurchaseTicketEmbed({ user, planLabel, pricing, couponCode, couponApplied, invalidCoupon }) {
@@ -3308,7 +3301,7 @@ async function handleButton(interaction) {
 
   if (interaction.customId === 'buy_plan_open') {
     clearPurchaseSession(interaction.guild.id, interaction.user.id);
-    await interaction.showModal(buildPurchaseIntroModal());
+    await safeReply(interaction, buildPurchasePlanSelectPayload());
     return true;
   }
 
@@ -3500,6 +3493,26 @@ async function handleSelect(interaction) {
     return true;
   }
 
+  if (interaction.customId === 'buy_plan_plan_select') {
+    const planType = interaction.values?.[0];
+    const meta = getPurchasePlanMeta(planType);
+    if (!meta) {
+      await interaction.reply(privateReply('Selecione um plano válido.'));
+      return true;
+    }
+
+    const current = getPurchaseSession(interaction.guild.id, interaction.user.id) || {};
+    savePurchaseSession(interaction.guild.id, interaction.user.id, {
+      ...current,
+      planType,
+      planLabel: meta.label,
+      planSelectedAt: new Date().toISOString()
+    });
+
+    await interaction.showModal(buildPurchaseIntroModal());
+    return true;
+  }
+
   if (interaction.customId === 'buy_plan_coupon_select') {
     const session = getPurchaseSession(interaction.guild.id, interaction.user.id);
     if (!session) {
@@ -3624,9 +3637,9 @@ async function handleModal(interaction) {
 
   if (interaction.customId === 'buy_plan_intro_submit') {
     const projectName = interaction.fields.getTextInputValue('project_name').trim();
-    const planChoice = interaction.fields.getTextInputValue('plan_choice').trim();
     const projectDetails = interaction.fields.getTextInputValue('project_details').trim();
-    const planType = normalizePurchasePlanChoice(planChoice);
+    const current = getPurchaseSession(interaction.guild.id, interaction.user.id) || {};
+    const planType = current.planType;
 
     if (!projectName) {
       await interaction.reply(privateReply('Informe o nome do projeto ou bot.'));
@@ -3634,20 +3647,13 @@ async function handleModal(interaction) {
     }
 
     if (!planType) {
-      await interaction.reply(privateReply('Informe um plano válido: Básico, Premium ou Completo.'));
-      return true;
-    }
-
-    const planMeta = getPurchasePlanMeta(planType);
-    if (!planMeta) {
-      await interaction.reply(privateReply('Não foi possível identificar o plano escolhido.'));
+      await interaction.reply(privateReply('Selecione um plano antes de continuar.'));
       return true;
     }
 
     savePurchaseSession(interaction.guild.id, interaction.user.id, {
-      ...(getPurchaseSession(interaction.guild.id, interaction.user.id) || {}),
+      ...current,
       planType,
-      planLabel: planMeta.label,
       projectName,
       projectDetails: projectDetails || null,
       introSubmittedAt: new Date().toISOString()
