@@ -351,6 +351,7 @@ async function retailCommand(interaction) {
 
   const plansChannel = await interaction.guild.channels.fetch(setup.channels.plans).catch(() => null);
   const promotionsChannel = await interaction.guild.channels.fetch(setup.channels.promotions).catch(() => null);
+  const buyNowChannel = await interaction.guild.channels.fetch(setup.channels.buyNow).catch(() => null);
   const systemSettings = getSystemSettings(interaction.guild.id);
 
   if (plansChannel?.isTextBased()) {
@@ -365,6 +366,13 @@ async function retailCommand(interaction) {
       content: active ? `<@&${roleId}>` : undefined,
       allowedMentions: active ? { roles: [roleId] } : undefined,
       embeds: [buildPromotionEmbed(active)]
+    });
+  }
+
+  if (buyNowChannel?.isTextBased()) {
+    await replacePanelMessage(buyNowChannel, {
+      embeds: [buildPlansEmbeds({ settings: systemSettings })[0]],
+      components: buildPlansButtons()
     });
   }
 

@@ -3022,6 +3022,8 @@ async function handleSystemPanelSubmit(interaction, setup) {
     updateSystemSettings(interaction.guild.id, { prices: { basic: value } });
   } else if (interaction.customId === 'panel_price_premium_submit') {
     updateSystemSettings(interaction.guild.id, { prices: { premium: value } });
+  } else if (interaction.customId === 'panel_price_complete_submit') {
+    updateSystemSettings(interaction.guild.id, { prices: { complete: value } });
   } else if (interaction.customId === 'panel_price_hosting_submit') {
     updateSystemSettings(interaction.guild.id, { prices: { hosting: value } });
   } else {
