@@ -161,16 +161,14 @@ async function sendPanels(channels, report) {
       .setTitle('Adquira seu Plano')
       .setDescription(
         'Escolha o plano ideal para você e tenha acesso imediato ao sistema.\n\n' +
-          '**BÁSICO** — R$ XX,00/mês\nAcesso padrão ao sistema, suporte via ticket\n\n' +
-          '**PROFISSIONAL** — R$ XX,00/mês\nTudo do básico + acesso VIP + suporte prioritário\n\n' +
-          '**VITALÍCIO** — R$ XX,00 único\nAcesso permanente + todos os benefícios'
+          '**BÁSICO** — R$ 49,90/mês\nAcesso padrão ao sistema, suporte via ticket\n\n' +
+          '**PREMIUM** — R$ 99,90/mês\nTudo do básico + acesso VIP + suporte prioritário\n\n' +
+          '**COMPLETO** — R$ 350,00 único\nAcesso permanente + todos os benefícios'
       )
       .setFooter({ text: 'Após o pagamento, envie o comprovante no suporte.' }),
     [
       new ActionRowBuilder().addComponents(
-        button('plan_basic', 'Básico', ButtonStyle.Secondary),
-        button('plan_pro', 'Profissional', ButtonStyle.Secondary),
-        button('plan_lifetime', 'Vitalício', ButtonStyle.Secondary)
+        button('buy_plan_open', 'Comprar Plano', ButtonStyle.Success)
       )
     ]
   );

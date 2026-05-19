@@ -66,19 +66,13 @@ const {
 } = require('./contracts');
 const { buildPlansButtons, buildPlansEmbeds, buildPromotionEmbed, getPlanPricing } = require('./plans');
 const { replacePanelMessage } = require('./panelUtils');
+const { isPanelRestoreSuppressed } = require('./panelRestore');
 const { buildRenewPanelPayload, buildSuggestionsPanelPayload, buildTicketPanelPayload } = require('./staticPanels');
 
 const PROJECT_ACCESS_CATEGORY_ID = process.env.PROJECT_ACCESS_CATEGORY_ID || '1505195763469127770';
 const HOSTING_LOG_CHANNEL_ID = process.env.HOSTING_LOG_CHANNEL_ID || '1505275946721087730';
 const TICKET_ALERT_ROLE_ID = process.env.TICKET_ALERT_ROLE_ID || '1505184193766752386';
 const PAYMENT_REJECT_DELETE_MS = 3 * 60 * 60 * 1000;
-
-const restoreSuppression = new Set();
-
-function suppressPanelRestore(channelId, ttlMs = 10000) {
-  restoreSuppression.add(channelId);
-  setTimeout(() => restoreSuppression.delete(channelId), ttlMs).unref?.();
-}
 
 function isUnknownInteraction(error) {
   return error?.code === 10062 || String(error?.message || '').includes('Unknown interaction');
@@ -100,6 +94,25 @@ function findRoleBySetupName(guild, expectedName) {
 function findChannelBySetupName(guild, expectedName, oldName = null) {
   const targets = [expectedName, oldName].filter(Boolean).map(normalizeSetupName);
   return guild.channels.cache.find((channel) => targets.includes(normalizeSetupName(channel.name))) || null;
+}
+
+async function resolveConfiguredRole(guild, setup, key, fallbackName = null) {
+  const envKey = `${String(key).replace(/([a-z0-9])([A-Z])/g, '$1_$2').toUpperCase()}_ROLE_ID`;
+  const roleId = setup?.roles?.[key] || process.env[envKey] || null;
+  if (roleId) {
+    const role = await guild.roles.fetch(roleId).catch(() => null);
+    if (role) {
+      return role;
+    }
+  }
+
+  const targetName = fallbackName || roleSpecs.find((role) => role.key === key)?.name;
+  if (!targetName) {
+    return null;
+  }
+
+  await guild.roles.fetch().catch(() => null);
+  return guild.roles.cache.find((role) => normalizeSetupName(role.name) === normalizeSetupName(targetName)) || null;
 }
 
 function buildGuildSetupFallback(guild) {
@@ -174,11 +187,12 @@ const ticketLabels = {
   ticket_question: 'Dúvida Geral',
   ticket_technical: 'Suporte Técnico',
   plan_basic: 'Compra - Básico',
-  plan_pro: 'Compra - Profissional',
-  plan_lifetime: 'Compra - Vitalício',
+  plan_pro: 'Compra - Premium',
+  plan_lifetime: 'Compra - Completo',
   plan_paid: 'Comprovante de Pagamento',
   renew_now: 'Renovação de Plano',
-  renew_check: 'Verificar Renovação'
+  renew_check: 'Verificar Renovação',
+  plan_order: 'Pedido de Compra'
 };
 
 const ticketSlugs = {
@@ -188,7 +202,8 @@ const ticketSlugs = {
   ticket_technical: 'tecnico',
   plan_basic: 'basico',
   plan_pro: 'premium',
-  plan_lifetime: 'vitalicio',
+  plan_lifetime: 'completo',
+  plan_order: 'compra',
   plan_paid: 'comprovante',
   renew_now: 'renovacao',
   renew_check: 'verificar-renovacao'
@@ -251,6 +266,323 @@ function brl(value) {
     style: 'currency',
     currency: 'BRL'
   }).format(Number(value || 0));
+}
+
+const SALE_VALID_COUPONS = new Set(['PROMO2024', 'DESCONTO', 'BLACK50', 'SALE']);
+const SALE_PLANS = {
+  plan_basic: {
+    label: 'Plano Básico',
+    slug: 'basico',
+    price: 49.9,
+    couponDiscount: 30
+  },
+  plan_premium: {
+    label: 'Plano Premium',
+    slug: 'premium',
+    popular: true,
+    price: 99.9,
+    couponDiscount: 50
+  },
+  plan_lifetime: {
+    label: 'Plano Completo',
+    slug: 'completo',
+    price: 350,
+    couponDiscount: 0
+  }
+};
+const SALE_PAYMENT_METHODS = {
+  cash: { label: 'À Vista', detail: '100% agora' },
+  split: { label: '50% + 50%', detail: 'Entrada de 50% e restante depois' }
+};
+
+const purchaseSessions = new Map();
+const PURCHASE_SESSION_TTL = 15 * 60 * 1000;
+
+function getPurchaseSessionKey(guildId, userId) {
+  return `${guildId}:${userId}`;
+}
+
+function clearPurchaseSession(guildId, userId) {
+  purchaseSessions.delete(getPurchaseSessionKey(guildId, userId));
+}
+
+function savePurchaseSession(guildId, userId, payload) {
+  const key = getPurchaseSessionKey(guildId, userId);
+  const existing = purchaseSessions.get(key);
+  if (existing?.timer) {
+    clearTimeout(existing.timer);
+  }
+
+  const timer = setTimeout(() => purchaseSessions.delete(key), PURCHASE_SESSION_TTL);
+  timer.unref?.();
+  purchaseSessions.set(key, { ...payload, timer });
+}
+
+function getPurchaseSession(guildId, userId) {
+  const session = purchaseSessions.get(getPurchaseSessionKey(guildId, userId));
+  if (!session) {
+    return null;
+  }
+
+  return session;
+}
+
+function getPurchasePlanMeta(planType) {
+  return SALE_PLANS[planType] || null;
+}
+
+function getPurchasePlanPricing(planType, settings) {
+  return getPlanPricing(planType, settings);
+}
+
+function getSalePricing(planType, couponCode = null) {
+  const plan = SALE_PLANS[planType] || null;
+  if (!plan) {
+    return null;
+  }
+
+  const normalizedCode = String(couponCode || '').trim().toUpperCase();
+  const couponValid = normalizedCode ? SALE_VALID_COUPONS.has(normalizedCode) : false;
+  const couponDiscount = couponValid ? Number(plan.couponDiscount || 0) : 0;
+  const discountAmount = plan.price * (couponDiscount / 100);
+  const finalPrice = Number((plan.price - discountAmount).toFixed(2));
+  const splitEntry = Number((finalPrice / 2).toFixed(2));
+
+  return {
+    plan,
+    basePrice: Number(plan.price.toFixed(2)),
+    couponCode: normalizedCode || null,
+    couponValid,
+    couponDiscount,
+    discountAmount: Number(discountAmount.toFixed(2)),
+    finalPrice,
+    paymentCashTotal: finalPrice,
+    paymentSplitEntry: splitEntry,
+    paymentSplitRemaining: Number((finalPrice - splitEntry).toFixed(2))
+  };
+}
+
+function buildPurchaseStartPayload(settings) {
+  return buildPurchaseFormPayload({});
+}
+
+function buildPurchaseFormPayload(session = {}, settings = null) {
+  const state = session || {};
+  const pricing = getSalePricing(state.planType, state.couponCode);
+  const hasPlan = Boolean(pricing);
+  const hasPayment = Boolean(state.paymentMethod);
+  const hasCoupon = Boolean(state.couponCode);
+  const couponNotice = state.couponCode
+    ? pricing?.couponValid
+      ? `Cupom **${state.couponCode}** aplicado com sucesso.`
+      : `O cupom **${state.couponCode}** não é válido para este pedido.`
+    : 'Nenhum cupom informado.';
+
+  const paymentEnabled = hasPlan;
+  const confirmEnabled = hasPlan && hasPayment;
+
+  const selectedPlanBasic = state.planType === 'plan_basic';
+  const selectedPlanPremium = state.planType === 'plan_premium';
+  const paymentCashSelected = state.paymentMethod === 'cash';
+  const paymentSplitSelected = state.paymentMethod === 'split';
+
+  const couponButtonLabel = hasCoupon ? '☑ Tenho um cupom de desconto' : '☐ Tenho um cupom de desconto';
+  const couponButtonStyle = hasCoupon ? ButtonStyle.Success : ButtonStyle.Primary;
+  const stage = !hasPlan ? 'plan' : !hasPayment ? 'payment' : 'final';
+  const showSummary = hasPlan;
+
+  const summaryFields = showSummary
+    ? [
+        { name: 'Plano selecionado', value: `${pricing.plan.label}\n${brl(pricing.basePrice)}`, inline: true },
+        {
+          name: 'Cupom aplicado',
+          value: pricing.couponCode
+            ? pricing.couponValid
+              ? `✅ ${pricing.couponCode} (-${pricing.couponDiscount}%)`
+              : `❌ ${pricing.couponCode} não aplicado`
+            : 'Nenhum',
+          inline: true
+        },
+        {
+          name: 'Forma de pagamento',
+          value: state.paymentMethod
+            ? `${SALE_PAYMENT_METHODS[state.paymentMethod].label}\n${SALE_PAYMENT_METHODS[state.paymentMethod].detail}`
+            : 'Selecione a forma de pagamento',
+          inline: true
+        },
+        ...((state.paymentMethod === 'split')
+          ? [
+              {
+                name: 'Parcelas',
+                value: `${brl(pricing.paymentSplitEntry)} agora\n${brl(pricing.paymentSplitRemaining)} depois`,
+                inline: true
+              }
+            ]
+          : []),
+        {
+          name: 'Total final',
+          value: brl(pricing.finalPrice),
+          inline: true
+        }
+      ]
+    : [];
+
+  return {
+    embeds: [
+      new EmbedBuilder()
+        .setColor(hasPlan ? (pricing.couponValid ? colors.default : colors.red) : 0x7c6bff)
+        .setTitle('Novo Pedido')
+        .setDescription(
+          'Selecione o plano, escolha a forma de pagamento e, se quiser, informe um cupom.\n' +
+            'O resumo atualiza em tempo real neste painel.\n\n' +
+            couponNotice
+        )
+        .addFields(
+          {
+            name: 'Plano Básico',
+            value: `R$ 49,90/mês\nDesconto cupom: 30%`,
+            inline: true
+          },
+          {
+            name: 'Plano Premium',
+            value: `R$ 99,90/mês\nDesconto cupom: 50%\nPopular`,
+            inline: true
+          },
+          ...summaryFields,
+          ...(hasPlan && state.couponCode
+            ? [
+                {
+                  name: 'Cupom',
+                  value: pricing.couponValid
+                    ? `✅ ${state.couponCode} aplicado com sucesso.`
+                    : `❌ ${state.couponCode} não é válido para este pedido.`,
+                  inline: false
+                }
+              ]
+            : [])
+        )
+        .setFooter({ text: 'Modo de venda do Orvitek' })
+    ],
+    components: [
+      ...(stage === 'plan'
+        ? [
+            new ActionRowBuilder().addComponents(
+              new ButtonBuilder()
+                .setCustomId('buy_plan_plan_basic')
+                .setLabel(`${selectedPlanBasic ? '◉' : '○'} Plano Básico`)
+                .setStyle(selectedPlanBasic ? ButtonStyle.Success : ButtonStyle.Secondary),
+              new ButtonBuilder()
+                .setCustomId('buy_plan_plan_premium')
+                .setLabel(`${selectedPlanPremium ? '◉' : '○'} Plano Premium`)
+                .setStyle(selectedPlanPremium ? ButtonStyle.Success : ButtonStyle.Secondary)
+            ),
+            new ActionRowBuilder().addComponents(
+              new ButtonBuilder()
+                .setCustomId('buy_plan_plan_complete')
+                .setLabel(`${state.planType === 'plan_lifetime' ? '◉' : '○'} Plano Completo`)
+                .setStyle(state.planType === 'plan_lifetime' ? ButtonStyle.Success : ButtonStyle.Secondary)
+            ),
+            new ActionRowBuilder().addComponents(
+              new ButtonBuilder()
+                .setCustomId('buy_plan_cancel')
+                .setLabel('Cancelar')
+                .setStyle(ButtonStyle.Secondary)
+            )
+          ]
+        : []),
+      ...(stage === 'payment'
+        ? [
+            new ActionRowBuilder().addComponents(
+              new ButtonBuilder()
+                .setCustomId('buy_plan_payment_cash')
+                .setLabel('◉ À Vista')
+                .setStyle(paymentCashSelected ? ButtonStyle.Primary : ButtonStyle.Secondary)
+                .setDisabled(!paymentEnabled),
+              new ButtonBuilder()
+                .setCustomId('buy_plan_payment_split')
+                .setLabel('◉ 50% + 50%')
+                .setStyle(paymentSplitSelected ? ButtonStyle.Primary : ButtonStyle.Secondary)
+                .setDisabled(!paymentEnabled)
+            )
+          ]
+        : []),
+      ...(stage === 'final'
+        ? [
+            new ActionRowBuilder().addComponents(
+              new ButtonBuilder()
+                .setCustomId('buy_plan_coupon_toggle')
+                .setLabel(couponButtonLabel)
+                .setStyle(couponButtonStyle)
+                .setDisabled(!paymentEnabled)
+            )
+          ]
+        : []),
+      ...(hasPlan
+        ? [
+            new ActionRowBuilder().addComponents(
+              new ButtonBuilder()
+                .setCustomId('buy_plan_confirm')
+                .setLabel('Confirmar Pedido')
+                .setStyle(ButtonStyle.Success)
+                .setDisabled(!confirmEnabled),
+              new ButtonBuilder()
+                .setCustomId('buy_plan_cancel')
+                .setLabel('Cancelar')
+                .setStyle(ButtonStyle.Secondary)
+            )
+          ]
+        : [])
+    ]
+  };
+}
+
+function buildPurchaseCouponModal() {
+  const modal = new ModalBuilder()
+    .setCustomId('buy_plan_coupon_submit')
+    .setTitle('Cupom de desconto');
+
+  const coupon = new TextInputBuilder()
+    .setCustomId('coupon')
+    .setLabel('Código do cupom')
+    .setStyle(TextInputStyle.Short)
+    .setRequired(true)
+    .setPlaceholder('Ex: ORVITEK10')
+    .setMaxLength(20);
+
+  modal.addComponents(new ActionRowBuilder().addComponents(coupon));
+  return modal;
+}
+
+function buildPurchaseTicketEmbed({ user, planLabel, pricing, couponCode, couponApplied, invalidCoupon }) {
+  const originalValue = Number(pricing.basePrice || 0);
+  const discountPercent = couponApplied ? Number(pricing.couponDiscount || 0) : 0;
+  const splitFields = pricing.paymentLabel === '50% + 50%'
+    ? [
+        { name: 'Entrada', value: brl(pricing.paymentSplitEntry), inline: true },
+        { name: 'Restante', value: brl(pricing.paymentSplitRemaining), inline: true }
+      ]
+    : [];
+
+  return new EmbedBuilder()
+    .setColor(couponApplied ? colors.default : colors.gold)
+    .setTitle('Pedido de compra de plano')
+    .setDescription('Ticket privado criado para finalizar o atendimento e aguardar o pagamento.')
+    .addFields(
+      { name: 'Nome do cliente', value: user.tag, inline: true },
+      { name: 'ID do Discord', value: user.id, inline: true },
+      { name: 'Plano escolhido', value: planLabel, inline: true },
+      { name: 'Cupom usado', value: couponCode || 'Nenhum', inline: true },
+      { name: 'Desconto aplicado', value: couponApplied ? `${discountPercent}%` : '0%', inline: true },
+      { name: 'Valor original', value: brl(originalValue), inline: true },
+      { name: 'Forma de pagamento', value: pricing.paymentLabel || 'não informada', inline: true },
+      { name: 'Valor final', value: brl(pricing.finalPrice), inline: true },
+      { name: 'Status', value: 'Aguardando pagamento', inline: true },
+      ...splitFields,
+      ...(invalidCoupon
+        ? [{ name: 'Aviso', value: `O cupom **${couponCode}** não foi aplicado porque é inválido.` }]
+        : [])
+    )
+    .setTimestamp();
 }
 
 function generateAccessPassword() {
@@ -460,6 +792,7 @@ function buildSystemPanelEmbed(guild) {
         value:
           `Básico: **${brl(settings.prices.basic)}**\n` +
           `Premium: **${brl(settings.prices.premium)}**\n` +
+          `Completo: **${brl(settings.prices.complete || settings.prices.premium)}**\n` +
           `Hospedagem: **${brl(settings.prices.hosting)}/mês**`,
         inline: false
       },
@@ -527,6 +860,7 @@ function buildSystemPanelButtons() {
         .addOptions(
           { label: 'Editar Básico', value: 'panel_price_basic', description: 'Alterar o valor do plano Básico.' },
           { label: 'Editar Premium', value: 'panel_price_premium', description: 'Alterar o valor do plano Premium.' },
+          { label: 'Editar Completo', value: 'panel_price_complete', description: 'Alterar o valor do plano Completo.' },
           { label: 'Editar Hospedagem', value: 'panel_price_hosting', description: 'Alterar o valor mensal da hospedagem.' },
           { label: 'Cadastrar Cupom', value: 'panel_coupon_create', description: 'Criar ou atualizar o cupom ativo.' },
           { label: 'Remover Cupom', value: 'panel_coupon_clear', description: 'Desativar o cupom atual.' },
@@ -768,6 +1102,7 @@ async function handleSystemPanelButton(interaction, setup, selectedTool = intera
   const modalMap = {
     panel_price_basic: buildPriceModal('panel_price_basic_submit', 'Plano Básico', settings.prices.basic),
     panel_price_premium: buildPriceModal('panel_price_premium_submit', 'Plano Premium', settings.prices.premium),
+    panel_price_complete: buildPriceModal('panel_price_complete_submit', 'Plano Completo', settings.prices.complete || settings.prices.premium),
     panel_price_hosting: buildPriceModal('panel_price_hosting_submit', 'Hospedagem', settings.prices.hosting),
     panel_coupon_create: buildCouponModal(settings.coupon)
   };
@@ -1128,22 +1463,22 @@ async function ensureProjectChannel(guild, setup, user, projectName) {
 }
 
 async function verifyMember(interaction, setup) {
-  const unverified = process.env.UNVERIFIED_ROLE_ID || setup.roles.unverified;
-  const futureClient = process.env.FUTURE_CLIENT_ROLE_ID || setup.roles.futureClient || setup.roles.visitor;
+  const unverified = await resolveConfiguredRole(interaction.guild, setup, 'unverified', 'Não Verificado');
+  const futureClient = await resolveConfiguredRole(interaction.guild, setup, 'futureClient', 'Futuro Cliente');
 
   try {
-    if (unverified && interaction.member.roles.cache.has(unverified)) {
-      await interaction.member.roles.remove(unverified);
+    if (unverified && interaction.member.roles.cache.has(unverified.id)) {
+      await interaction.member.roles.remove(unverified.id).catch(() => null);
     }
 
-    const role = await interaction.guild.roles.fetch(futureClient).catch(() => null);
-
-    if (!role) {
+    if (!futureClient) {
       await safeReply(interaction, privateReply('⚠️ Ocorreu um erro ao processar sua verificação. Por favor, entre em contato com um administrador.'));
       return;
     }
 
-    await interaction.member.roles.add(futureClient);
+    await interaction.member.roles.add(futureClient.id).catch((error) => {
+      throw new Error(`Não foi possível adicionar o cargo de verificação: ${error.message}`);
+    });
     const dmSent = await sendDmPanel(interaction.user, buildVerificationSuccessDm(interaction.guild.name));
     await safeReply(
       interaction,
@@ -1269,6 +1604,131 @@ async function openTicket(interaction, setup, type, reason = null) {
   }
 
   await interaction.reply(privateReply(`Ticket criado: ${channel}`));
+}
+
+async function openPurchaseOrderTicket(interaction, setup, session, pricing, couponCode = null, invalidCoupon = false) {
+  const username = channelSafe(interaction.user.username);
+  const planMeta = getPurchasePlanMeta(session.planType);
+  const channelName = `compra-${planMeta?.slug || 'plano'}-${username}`.slice(0, 90);
+  const existing = interaction.guild.channels.cache.find(
+    (channel) => channel.name === channelName && channel.type === ChannelType.GuildText
+  );
+
+  if (existing) {
+    const message = `Você já tem um ticket de compra aberto: ${existing}`;
+    if (interaction.deferred || interaction.replied) {
+      await interaction.editReply({ content: message }).catch(() => null);
+    } else {
+      await interaction.reply(privateReply(message));
+    }
+    return;
+  }
+
+  const supportCategoryId = setup.categories.supportCategory;
+  const channel = await interaction.guild.channels.create({
+    name: channelName,
+    type: ChannelType.GuildText,
+    parent: supportCategoryId || null,
+    permissionOverwrites: [
+      { id: interaction.guild.roles.everyone.id, deny: [PermissionFlagsBits.ViewChannel] },
+      {
+        id: interaction.user.id,
+        allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory]
+      },
+      ...staffOverwrites(setup)
+    ],
+    reason: `Pedido de compra criado por ${interaction.user.tag}`
+  });
+
+  const ticket = createTicket({
+    guildId: interaction.guild.id,
+    channelId: channel.id,
+    ownerId: interaction.user.id,
+    ownerTag: interaction.user.tag,
+    type: 'plan_order'
+  });
+
+  const paymentLabel = SALE_PAYMENT_METHODS[session.paymentMethod]?.label || 'não informada';
+  const ticketPricing = {
+    ...pricing,
+    paymentLabel
+  };
+
+  updateTicket(channel.id, {
+    orderStatus: 'awaiting_payment',
+    planType: session.planType,
+    planLabel: session.planLabel,
+    paymentMethod: session.paymentMethod || null,
+    paymentLabel,
+    couponCode: couponCode || null,
+    couponApplied: Boolean(pricing.couponValid),
+    couponValid: Boolean(pricing.couponValid),
+    couponPercent: pricing.couponValid ? Number(pricing.couponDiscount || 0) : 0,
+    originalValue: Number(pricing.basePrice || 0),
+    finalValue: Number(pricing.finalPrice || 0),
+    splitEntry: Number(pricing.paymentSplitEntry || pricing.finalPrice || 0),
+    splitRemaining: Number(pricing.paymentSplitRemaining || 0)
+  });
+
+  const ticketMentions = [`<@${interaction.user.id}>`];
+  if (TICKET_ALERT_ROLE_ID) {
+    ticketMentions.push(`<@&${TICKET_ALERT_ROLE_ID}>`);
+  }
+
+  await channel.send({
+    content: ticketMentions.join(' '),
+    allowedMentions: {
+      users: [interaction.user.id],
+      roles: TICKET_ALERT_ROLE_ID ? [TICKET_ALERT_ROLE_ID] : []
+    },
+    embeds: [
+      buildPurchaseTicketEmbed({
+        user: interaction.user,
+        planLabel: session.planLabel,
+        pricing: ticketPricing,
+        couponCode,
+        couponApplied: Boolean(pricing.couponValid),
+        invalidCoupon
+      })
+    ],
+    components: buildTicketActions('plan_order', false, false)
+  });
+
+  const message = invalidCoupon
+    ? `Pedido criado: ${channel}. O cupom informado não foi aplicado porque é inválido.`
+    : `Pedido criado: ${channel}. A equipe já recebeu seu pedido e vai seguir com o atendimento.`;
+
+  if (interaction.deferred || interaction.replied) {
+    await interaction.editReply({
+      content: message,
+      embeds: [
+        buildPurchaseTicketEmbed({
+          user: interaction.user,
+          planLabel: session.planLabel,
+          pricing: ticketPricing,
+          couponCode,
+          couponApplied: Boolean(pricing.couponValid),
+          invalidCoupon
+        })
+      ],
+      components: []
+    }).catch(() => null);
+  } else {
+    await interaction.reply(privateReply({
+      content: message,
+      embeds: [
+        buildPurchaseTicketEmbed({
+          user: interaction.user,
+          planLabel: session.planLabel,
+          pricing: ticketPricing,
+          couponCode,
+          couponApplied: Boolean(pricing.couponValid),
+          invalidCoupon
+        })
+      ],
+      components: []
+    }));
+  }
 }
 
 async function handleTicketAction(interaction, setup) {
@@ -2417,7 +2877,7 @@ async function handleCouponCreateSubmit(interaction, setup) {
 }
 
 async function restoreDeletedPanel(message) {
-  if (restoreSuppression.has(message.channelId)) {
+  if (isPanelRestoreSuppressed(message.channelId)) {
     return false;
   }
 
@@ -2554,6 +3014,107 @@ async function handleButton(interaction) {
     return true;
   }
 
+  if (interaction.customId === 'buy_plan_open') {
+    clearPurchaseSession(interaction.guild.id, interaction.user.id);
+    await safeReply(interaction, privateReply(buildPurchaseStartPayload(getSystemSettings(interaction.guild.id))));
+    return true;
+  }
+
+  if (
+    interaction.customId === 'buy_plan_plan_basic' ||
+    interaction.customId === 'buy_plan_plan_premium' ||
+    interaction.customId === 'buy_plan_plan_complete'
+  ) {
+    const planType =
+      interaction.customId === 'buy_plan_plan_basic'
+        ? 'plan_basic'
+        : interaction.customId === 'buy_plan_plan_premium'
+          ? 'plan_premium'
+          : 'plan_lifetime';
+    const meta = getPurchasePlanMeta(planType);
+    const current = getPurchaseSession(interaction.guild.id, interaction.user.id) || {};
+    savePurchaseSession(interaction.guild.id, interaction.user.id, {
+      ...current,
+      planType,
+      planLabel: meta.label,
+      planSelectedAt: new Date().toISOString()
+    });
+
+    await interaction.update(buildPurchaseFormPayload(getPurchaseSession(interaction.guild.id, interaction.user.id), getSystemSettings(interaction.guild.id)));
+    return true;
+  }
+
+  if (interaction.customId === 'buy_plan_payment_cash' || interaction.customId === 'buy_plan_payment_split') {
+    const current = getPurchaseSession(interaction.guild.id, interaction.user.id);
+    if (!current?.planType) {
+      await interaction.reply(privateReply('Selecione primeiro um plano.'));
+      return true;
+    }
+
+    const paymentMethod = interaction.customId === 'buy_plan_payment_cash' ? 'cash' : 'split';
+    savePurchaseSession(interaction.guild.id, interaction.user.id, {
+      ...current,
+      paymentMethod,
+      paymentLabel: SALE_PAYMENT_METHODS[paymentMethod].label,
+      paymentSelectedAt: new Date().toISOString()
+    });
+
+    await interaction.update(buildPurchaseFormPayload(getPurchaseSession(interaction.guild.id, interaction.user.id), getSystemSettings(interaction.guild.id)));
+    return true;
+  }
+
+  if (interaction.customId === 'buy_plan_coupon_toggle') {
+    const current = getPurchaseSession(interaction.guild.id, interaction.user.id);
+    if (!current?.planType) {
+      await interaction.reply(privateReply('Selecione primeiro um plano.'));
+      return true;
+    }
+
+    if (current.couponCode) {
+      savePurchaseSession(interaction.guild.id, interaction.user.id, {
+        ...current,
+        couponCode: null,
+        couponApplied: false,
+        couponSubmittedAt: null,
+        couponSavedAt: new Date().toISOString()
+      });
+
+      await interaction.update(buildPurchaseFormPayload(getPurchaseSession(interaction.guild.id, interaction.user.id), getSystemSettings(interaction.guild.id)));
+      return true;
+    }
+
+    await interaction.showModal(buildPurchaseCouponModal());
+    return true;
+  }
+
+  if (interaction.customId === 'buy_plan_confirm') {
+    const current = getPurchaseSession(interaction.guild.id, interaction.user.id);
+    if (!current?.planType || !current.paymentMethod) {
+      await interaction.reply(privateReply('Selecione um plano e uma forma de pagamento antes de confirmar.'));
+      return true;
+    }
+
+    const pricing = getSalePricing(current.planType, current.couponCode || null);
+    await interaction.deferReply({ flags: 64 });
+    await openPurchaseOrderTicket(interaction, setup, current, pricing, current.couponCode || null, Boolean(current.couponCode && !pricing.couponValid));
+    clearPurchaseSession(interaction.guild.id, interaction.user.id);
+    return true;
+  }
+
+  if (interaction.customId === 'buy_plan_cancel') {
+    clearPurchaseSession(interaction.guild.id, interaction.user.id);
+    await interaction.update({
+      embeds: [
+        new EmbedBuilder()
+          .setColor(colors.gray)
+          .setTitle('Pedido cancelado')
+          .setDescription('O pedido de vendas foi cancelado.')
+      ],
+      components: []
+    });
+    return true;
+  }
+
   if (interaction.customId === 'verify_member' || interaction.customId === 'setup_verify') {
     await verifyMember(interaction, setup);
     return true;
@@ -2624,6 +3185,50 @@ async function handleSelect(interaction) {
   const setup = resolveGuildSetup(interaction.guild);
   if (!setup) {
     await interaction.reply(privateReply('O servidor ainda não foi configurado com /ativar.'));
+    return true;
+  }
+
+  if (interaction.customId === 'buy_plan_select') {
+    const planType = interaction.values?.[0];
+    const meta = getPurchasePlanMeta(planType);
+    if (!meta) {
+      await interaction.reply(privateReply('Selecione um plano válido.'));
+      return true;
+    }
+
+    const current = getPurchaseSession(interaction.guild.id, interaction.user.id) || {};
+    savePurchaseSession(interaction.guild.id, interaction.user.id, {
+      ...current,
+      planType,
+      planLabel: meta.label,
+      planSelectedAt: new Date().toISOString()
+    });
+
+    await interaction.update(buildPurchaseFormPayload(getPurchaseSession(interaction.guild.id, interaction.user.id), getSystemSettings(interaction.guild.id)));
+    return true;
+  }
+
+  if (interaction.customId === 'buy_plan_coupon_select') {
+    const session = getPurchaseSession(interaction.guild.id, interaction.user.id);
+    if (!session) {
+      await interaction.reply(privateReply('Seu fluxo de compra expirou. Clique em Comprar Plano novamente.'));
+      return true;
+    }
+
+    const choice = interaction.values?.[0];
+    if (choice === 'yes') {
+      await interaction.showModal(buildPurchaseCouponModal());
+      return true;
+    }
+
+    savePurchaseSession(interaction.guild.id, interaction.user.id, {
+      ...session,
+      couponCode: null,
+      couponValid: false,
+      couponSavedAt: new Date().toISOString()
+    });
+
+    await interaction.update(buildPurchaseFormPayload(getPurchaseSession(interaction.guild.id, interaction.user.id), getSystemSettings(interaction.guild.id)));
     return true;
   }
 
@@ -2720,6 +3325,32 @@ async function handleModal(interaction) {
     return true;
   }
 
+  if (interaction.customId === 'panel_price_complete_submit') {
+    await handleSystemPanelSubmit(interaction, setup);
+    return true;
+  }
+
+  if (interaction.customId === 'buy_plan_coupon_submit') {
+    const session = getPurchaseSession(interaction.guild.id, interaction.user.id);
+    if (!session) {
+      await interaction.reply(privateReply('Seu fluxo de compra expirou. Clique em Comprar Plano novamente.'));
+      return true;
+    }
+
+    const couponCode = interaction.fields.getTextInputValue('coupon').trim();
+    const pricing = getSalePricing(session.planType, couponCode || null);
+    const updatedSession = {
+      ...session,
+      couponCode: couponCode || null,
+      couponValid: Boolean(couponCode) && Boolean(pricing?.couponValid),
+      couponSavedAt: new Date().toISOString()
+    };
+    savePurchaseSession(interaction.guild.id, interaction.user.id, updatedSession);
+
+    await interaction.reply(privateReply(buildPurchaseFormPayload(updatedSession, getSystemSettings(interaction.guild.id))));
+    return true;
+  }
+
   if (interaction.customId === 'contract_submit') {
     await handleContractSubmit(interaction, setup);
     return true;
@@ -2739,6 +3370,7 @@ module.exports = {
   deleteHostingAccess,
   restoreDeletedPanel,
   restoreStaticPanel,
+  resolveConfiguredRole,
   suppressPanelRestore,
   sendRatingRequest
 };

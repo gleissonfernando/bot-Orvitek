@@ -99,6 +99,7 @@ function defaultSystemSettings() {
     prices: {
       basic: 50,
       premium: 250,
+      complete: 350,
       hosting: 12
     },
     coupon: {

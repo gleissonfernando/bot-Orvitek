@@ -14,7 +14,11 @@ function discounted(value, percent) {
 }
 
 function basePriceForPlan(planType, prices) {
-  if (planType === 'plan_pro' || planType === 'plan_lifetime') {
+  if (planType === 'plan_complete') {
+    return Number(prices.complete || prices.premium || 0);
+  }
+
+  if (planType === 'plan_pro' || planType === 'plan_lifetime' || planType === 'plan_premium') {
     return Number(prices.premium || 0);
   }
 
@@ -23,17 +27,30 @@ function basePriceForPlan(planType, prices) {
 
 function getPlanPricing(planType, settings = {}, couponCode = null) {
   const activeSettings = settings || {};
-  const prices = activeSettings.prices || { basic: 50, premium: 250, hosting: 12 };
+  const prices = activeSettings.prices || { basic: 50, premium: 250, complete: 350, hosting: 12 };
   const base = basePriceForPlan(planType, prices);
-  const promotionPercent = planType === 'plan_pro' || planType === 'plan_lifetime' ? 30 : 20;
+  const promotionPercent = planType === 'plan_pro' || planType === 'plan_lifetime' || planType === 'plan_premium' || planType === 'plan_complete' ? 30 : 20;
   const promotionActive = Boolean(activeSettings.retail?.active);
   const afterPromotion = promotionActive ? discounted(base, promotionPercent) : base;
-  const coupon = activeSettings.coupon?.active && activeSettings.coupon?.code ? activeSettings.coupon : null;
-  const couponMatches =
-    coupon &&
-    couponCode &&
-    String(coupon.code).trim().toLowerCase() === String(couponCode).trim().toLowerCase();
-  const final = couponMatches ? discounted(afterPromotion, Number(coupon.percent || 0)) : afterPromotion;
+  const normalizedCode = String(couponCode || '').trim().toUpperCase();
+  const configuredCoupon = activeSettings.coupon?.active && activeSettings.coupon?.code ? activeSettings.coupon : null;
+  const builtInCoupons = {
+    ORVITEK10: 10,
+    ORVITEK20: 20
+  };
+  const configuredCouponMatches =
+    configuredCoupon &&
+    normalizedCode &&
+    String(configuredCoupon.code).trim().toUpperCase() === normalizedCode;
+  const builtInCouponPercent = builtInCoupons[normalizedCode] || null;
+  const couponMatches = Boolean(configuredCouponMatches || builtInCouponPercent);
+  const coupon = configuredCouponMatches
+    ? configuredCoupon
+    : builtInCouponPercent
+      ? { code: normalizedCode, percent: builtInCouponPercent }
+      : null;
+  const couponPercent = couponMatches ? Number(coupon.percent || 0) : 0;
+  const final = couponMatches ? discounted(afterPromotion, couponPercent) : afterPromotion;
 
   return {
     base,
@@ -42,7 +59,7 @@ function getPlanPricing(planType, settings = {}, couponCode = null) {
     afterPromotion,
     coupon,
     couponMatches,
-    couponPercent: couponMatches ? Number(coupon.percent || 0) : 0,
+    couponPercent,
     final
   };
 }
@@ -97,6 +114,7 @@ function buildPlansEmbeds(input = {}) {
       .addFields(
         { name: 'Básico', value: `${basicPrice}\nIdeal para começar com comandos, mensagens e painéis simples.`, inline: true },
         { name: 'Premium', value: `${premiumPrice}\nSistema completo com tickets, automod, relatórios, clientes e /ativar.`, inline: true },
+        { name: 'Completo', value: `${brl(prices.complete || prices.premium)}\nAcesso completo com recursos avançados e entrega profissional.`, inline: true },
         { name: 'Hospedagem', value: `${brl(prices.hosting)}/mês\nOpcional, mantém o bot online 24h.`, inline: true }
       )
       .setFooter({ text: 'Escolha um plano pelo botão abaixo. Hospedagem não entra no desconto promocional.' }),
@@ -197,8 +215,7 @@ function buildPlansEmbed(promotionActive = false) {
 function buildPlansButtons() {
   return [
     new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId('plan_basic').setLabel('Contratar Básico').setStyle(ButtonStyle.Secondary),
-      new ButtonBuilder().setCustomId('plan_pro').setLabel('Contratar Premium').setStyle(ButtonStyle.Success)
+      new ButtonBuilder().setCustomId('buy_plan_open').setLabel('Comprar Plano').setStyle(ButtonStyle.Success)
     )
   ];
 }

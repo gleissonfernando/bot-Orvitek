@@ -9,12 +9,14 @@ const {
   handleModal,
   publishHostingReminder,
   deleteHostingAccess,
-  restoreDeletedPanel
+  restoreDeletedPanel,
+  resolveConfiguredRole
 } = require('./lib/interactions');
 const { isOwnerRole } = require('./lib/permissions');
 const { privateReply } = require('./lib/replies');
 const { addWarning, expireClient, getGuildSetup, getHostingCycleKey, getHostingGraceDeadline, getReport, listClients } = require('./lib/store');
 const { buildWelcomeChannelEmbed, buildWelcomeDmEmbed } = require('./lib/welcome');
+const { resolveConfiguredChannel } = require('./lib/panelLookup');
 
 if (!process.env.DISCORD_TOKEN) {
   throw new Error('Configure DISCORD_TOKEN no arquivo .env.');
@@ -93,24 +95,30 @@ process.once('SIGTERM', () => shutdown('SIGTERM'));
 
 client.on(Events.GuildMemberAdd, async (member) => {
   const setup = getGuildSetup(member.guild.id);
-  const verifyChannelId = setup?.channels?.verify;
-  const announcementsId = setup?.channels?.announcements || process.env.WELCOME_CHANNEL_ID;
+  const verifyChannel = await resolveConfiguredChannel(member.guild, setup, 'verify');
+  const announcementsChannel =
+    (await resolveConfiguredChannel(member.guild, setup, 'announcements')) ||
+    (process.env.WELCOME_CHANNEL_ID
+      ? await member.guild.channels.fetch(process.env.WELCOME_CHANNEL_ID).catch(() => null)
+      : null);
 
-  if (setup?.roles?.unverified) {
-    await member.roles.add(setup.roles.unverified).catch(() => null);
+  const unverifiedRole = await resolveConfiguredRole(member.guild, setup, 'unverified', 'Não Verificado');
+  if (unverifiedRole) {
+    await member.roles.add(unverifiedRole.id).catch(() => null);
   }
 
   await member
     .send({
-      embeds: [buildWelcomeDmEmbed(member, verifyChannelId)]
+      embeds: [buildWelcomeDmEmbed(member, verifyChannel?.id)]
     })
     .catch((error) => console.warn(`Nao foi possivel enviar DM para ${member.user.tag}: ${error.message}`));
 
-  if (announcementsId) {
-    const channel = await member.guild.channels.fetch(announcementsId).catch(() => null);
-    if (channel?.isTextBased()) {
-      await channel.send({ embeds: [buildWelcomeChannelEmbed(member, verifyChannelId)] });
-    }
+  if (announcementsChannel?.isTextBased()) {
+    await announcementsChannel.send({ embeds: [buildWelcomeChannelEmbed(member, verifyChannel?.id)] }).catch((error) => {
+      console.warn(`Nao foi possivel enviar mensagem de entrada em ${announcementsChannel.name}: ${error.message}`);
+    });
+  } else {
+    console.warn(`Canal de anuncios nao encontrado para boas-vindas no servidor ${member.guild.id}.`);
   }
 });
 
