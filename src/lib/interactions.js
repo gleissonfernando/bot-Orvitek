@@ -66,7 +66,7 @@ const {
 } = require('./contracts');
 const { buildPlansButtons, buildPlansEmbeds, buildPromotionEmbed, getPlanPricing } = require('./plans');
 const { replacePanelMessage } = require('./panelUtils');
-const { isPanelRestoreSuppressed } = require('./panelRestore');
+const { isPanelRestoreSuppressed, suppressPanelRestore } = require('./panelRestore');
 const { buildRenewPanelPayload, buildSuggestionsPanelPayload, buildTicketPanelPayload } = require('./staticPanels');
 
 const PROJECT_ACCESS_CATEGORY_ID = process.env.PROJECT_ACCESS_CATEGORY_ID || '1505195763469127770';
