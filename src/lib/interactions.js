@@ -723,7 +723,7 @@ function generateAccessPassword() {
   return String(Math.floor(1000 + Math.random() * 9000));
 }
 
-function generateAccessKey() {
+function generateAccessKey(projectName = null) {
   const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
   const segments = [];
 
@@ -736,7 +736,8 @@ function generateAccessKey() {
     segments.push(value);
   }
 
-  return `HST-${segments.join('-')}`;
+  const projectSlug = channelSafe(projectName || '') || 'projeto';
+  return `Orvitek-${projectSlug}-${segments.join('-')}`.slice(0, 90);
 }
 
 function hashHostingPassword(password, salt = null) {
@@ -2825,10 +2826,10 @@ async function handleHostingAccessCreateSubmit(interaction) {
     return true;
   }
 
-  let accessKey = generateAccessKey();
+  let accessKey = generateAccessKey(projectName);
   for (let attempt = 0; attempt < 20; attempt += 1) {
     if (!findClientByAccessKey(interaction.guild.id, accessKey)) break;
-    accessKey = generateAccessKey();
+    accessKey = generateAccessKey(projectName);
   }
 
   const { salt, hash } = hashHostingPassword(password);
