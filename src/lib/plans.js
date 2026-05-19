@@ -33,22 +33,18 @@ function getPlanPricing(planType, settings = {}, couponCode = null) {
   const promotionActive = Boolean(activeSettings.retail?.active);
   const afterPromotion = promotionActive ? discounted(base, promotionPercent) : base;
   const normalizedCode = String(couponCode || '').trim().toUpperCase();
-  const configuredCoupon = activeSettings.coupon?.active && activeSettings.coupon?.code ? activeSettings.coupon : null;
-  const builtInCoupons = {
-    ORVITEK10: 10,
-    ORVITEK20: 20
-  };
+  const configuredCoupon =
+    activeSettings.coupon?.active &&
+    activeSettings.coupon?.code &&
+    Number(activeSettings.coupon?.usesLeft ?? 0) > 0
+      ? activeSettings.coupon
+      : null;
   const configuredCouponMatches =
     configuredCoupon &&
     normalizedCode &&
     String(configuredCoupon.code).trim().toUpperCase() === normalizedCode;
-  const builtInCouponPercent = builtInCoupons[normalizedCode] || null;
-  const couponMatches = Boolean(configuredCouponMatches || builtInCouponPercent);
-  const coupon = configuredCouponMatches
-    ? configuredCoupon
-    : builtInCouponPercent
-      ? { code: normalizedCode, percent: builtInCouponPercent }
-      : null;
+  const couponMatches = Boolean(configuredCouponMatches);
+  const coupon = configuredCouponMatches ? configuredCoupon : null;
   const couponPercent = couponMatches ? Number(coupon.percent || 0) : 0;
   const final = couponMatches ? discounted(afterPromotion, couponPercent) : afterPromotion;
 
@@ -97,8 +93,10 @@ function buildPlansEmbeds(input = {}) {
   const promoText = promotionActive
     ? '\n\n🔥 **Promoção ativa:** Básico com 20% OFF e Premium com 30% OFF.'
     : '';
-  const couponText = settings?.coupon?.active && settings?.coupon?.code
-    ? `\n🎟️ **Cupom ativo:** \`${settings.coupon.code}\` com ${settings.coupon.percent}% OFF adicional.`
+  const couponText = settings?.coupon?.code
+    ? settings.coupon.active && Number(settings.coupon.usesLeft ?? 0) > 0
+      ? `\n🎟️ **Cupom ativo:** \`${settings.coupon.code}\` com ${settings.coupon.percent}% OFF adicional. Uso único.`
+      : `\n🎟️ **Último cupom:** \`${settings.coupon.code}\` ${settings.coupon.status === 'used' ? 'já foi usado' : 'está expirado'}.`
     : '';
 
   return [

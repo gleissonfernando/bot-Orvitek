@@ -149,6 +149,7 @@ const categories = [
     channels: [
       { key: 'generalLogs', name: '📋・logs-gerais', oldName: 'logs-gerais', roleKeys: staffRoleKeys, denyEveryone: true },
       { key: 'ticketLogs', name: '🎟️・logs-tickets', oldName: 'logs-tickets', roleKeys: staffRoleKeys, denyEveryone: true },
+      { key: 'couponLogs', name: '🎫・logs-cupons', oldName: 'logs-cupons', roleKeys: staffRoleKeys, denyEveryone: true },
       { key: 'modLogs', name: '🛡️・logs-moderação', oldName: 'logs-moderação', roleKeys: staffRoleKeys, denyEveryone: true },
       { key: 'reports', name: '📊・relatórios', oldName: 'relatórios', roleKeys: adminRoleKeys, denyEveryone: true },
       { key: 'staffChat', name: '💬・chat-staff', oldName: 'chat-staff', roleKeys: staffRoleKeys, denyEveryone: true }

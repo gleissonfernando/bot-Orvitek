@@ -106,6 +106,13 @@ function defaultSystemSettings() {
       active: false,
       code: null,
       percent: 0,
+      maxUses: 1,
+      usesLeft: 0,
+      usedCount: 0,
+      status: 'inactive',
+      usedAt: null,
+      usedBy: null,
+      usedByTag: null,
       updatedAt: null,
       updatedBy: null
     },
@@ -207,6 +214,14 @@ function setSystemCoupon(guildId, payload) {
   return updateSystemSettings(guildId, {
     coupon: {
       ...payload,
+      active: true,
+      maxUses: 1,
+      usesLeft: 1,
+      usedCount: 0,
+      status: 'active',
+      usedAt: null,
+      usedBy: null,
+      usedByTag: null,
       updatedAt: nowIso()
     }
   }).coupon;
@@ -216,10 +231,26 @@ function clearSystemCoupon(guildId, updatedBy = null) {
   return updateSystemSettings(guildId, {
     coupon: {
       active: false,
-      code: null,
-      percent: 0,
+      usesLeft: 0,
+      status: 'expired',
       updatedAt: nowIso(),
       updatedBy
+    }
+  }).coupon;
+}
+
+function consumeSystemCoupon(guildId, payload = {}) {
+  return updateSystemSettings(guildId, {
+    coupon: {
+      active: false,
+      usesLeft: 0,
+      usedCount: 1,
+      status: 'used',
+      usedAt: nowIso(),
+      usedBy: payload.usedBy || null,
+      usedByTag: payload.usedByTag || null,
+      updatedAt: nowIso(),
+      updatedBy: payload.updatedBy || payload.usedBy || null
     }
   }).coupon;
 }
@@ -422,6 +453,7 @@ module.exports = {
   getNextHostingDueDate,
   getHostingGraceDeadline,
   saveGuildSetup,
+  consumeSystemCoupon,
   setSystemCoupon,
   setRetailPromotion,
   clearSystemCoupon,

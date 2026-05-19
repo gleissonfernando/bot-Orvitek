@@ -30,6 +30,7 @@ const {
   getClient,
   getSystemSettings,
   clearSystemCoupon,
+  consumeSystemCoupon,
   getHostingCycleKey,
   getHostingGraceDeadline,
   getNextHostingDueDate,
@@ -67,10 +68,12 @@ const {
 const { buildPlansButtons, buildPlansEmbeds, buildPromotionEmbed, getPlanPricing } = require('./plans');
 const { replacePanelMessage } = require('./panelUtils');
 const { isPanelRestoreSuppressed, suppressPanelRestore } = require('./panelRestore');
+const { resolveConfiguredChannel } = require('./panelLookup');
 const { buildRenewPanelPayload, buildSuggestionsPanelPayload, buildTicketPanelPayload } = require('./staticPanels');
 
 const PROJECT_ACCESS_CATEGORY_ID = process.env.PROJECT_ACCESS_CATEGORY_ID || '1505195763469127770';
 const HOSTING_LOG_CHANNEL_ID = process.env.HOSTING_LOG_CHANNEL_ID || '1505275946721087730';
+const COUPON_LOG_CHANNEL_KEY = 'couponLogs';
 const TICKET_ALERT_ROLE_ID = process.env.TICKET_ALERT_ROLE_ID || '1505184193766752386';
 const PAYMENT_REJECT_DELETE_MS = 3 * 60 * 60 * 1000;
 
@@ -304,7 +307,6 @@ function brl(value) {
   }).format(Number(value || 0));
 }
 
-const SALE_VALID_COUPONS = new Set(['PROMO2024', 'DESCONTO', 'BLACK50', 'SALE']);
 const SALE_PLANS = {
   plan_basic: {
     label: 'Plano Básico',
@@ -387,9 +389,19 @@ function getSalePricing(planType, couponCode = null, settings = null) {
   }
 
   const normalizedCode = String(couponCode || '').trim().toUpperCase();
-  const couponValid = normalizedCode ? SALE_VALID_COUPONS.has(normalizedCode) : false;
+  const activeCoupon =
+    pricingSettings.coupon?.active &&
+    pricingSettings.coupon?.code &&
+    Number(pricingSettings.coupon?.usesLeft ?? 0) > 0
+      ? pricingSettings.coupon
+      : null;
+  const couponValid = Boolean(
+    activeCoupon &&
+      normalizedCode &&
+      String(activeCoupon.code).trim().toUpperCase() === normalizedCode
+  );
   const plan = SALE_PLANS[normalizedPlanType] || SALE_PLANS.plan_basic;
-  const couponDiscount = couponValid ? Number(plan.couponDiscount || 0) : 0;
+  const couponDiscount = couponValid ? Number(activeCoupon.percent || 0) : 0;
   const discountAmount = base * (couponDiscount / 100);
   const finalPrice = Number((base - discountAmount).toFixed(2));
   const splitEntry = Number((finalPrice / 2).toFixed(2));
@@ -415,7 +427,22 @@ function buildPurchaseStartPayload(session = {}, settings = null) {
 function buildPurchaseFormPayload(session = {}, settings = null) {
   const state = session || {};
   const hasPlan = Boolean(state.planType);
-  const pricing = hasPlan ? getSalePricing(state.planType, state.couponCode, settings) : null;
+  const pricing = state.couponApplied && Number.isFinite(Number(state.couponFinalPrice))
+    ? {
+        plan: getPurchasePlanMeta(state.planType) || SALE_PLANS.plan_basic,
+        basePrice: Number(state.couponBasePrice || 0),
+        couponCode: state.couponCode || null,
+        couponValid: true,
+        couponDiscount: Number(state.couponDiscount || 0),
+        discountAmount: Number(((Number(state.couponBasePrice || 0) || 0) - (Number(state.couponFinalPrice || 0) || 0)).toFixed(2)),
+        finalPrice: Number(state.couponFinalPrice || 0),
+        paymentCashTotal: Number(state.couponFinalPrice || 0),
+        paymentSplitEntry: Number(state.couponPaymentSplitEntry || Number((Number(state.couponFinalPrice || 0) / 2).toFixed(2))),
+        paymentSplitRemaining: Number(state.couponPaymentSplitRemaining || Number((Number(state.couponFinalPrice || 0) / 2).toFixed(2)))
+      }
+    : hasPlan
+      ? getSalePricing(state.planType, state.couponCode, settings)
+      : null;
   const hasPayment = Boolean(state.paymentMethod);
   const hasCoupon = Boolean(state.couponCode);
   const couponNotice = state.couponCode
@@ -599,7 +626,7 @@ function buildPurchaseCouponModal() {
     .setLabel('Código do cupom')
     .setStyle(TextInputStyle.Short)
     .setRequired(true)
-    .setPlaceholder('Ex: ORVITEK10')
+    .setPlaceholder('Ex: CUPOM-ORVITEK')
     .setMaxLength(20);
 
   modal.addComponents(new ActionRowBuilder().addComponents(coupon));
@@ -989,11 +1016,17 @@ function buildSystemPanelEmbed(guild) {
         inline: true
       },
       {
+        name: 'Logs de cupons',
+        value: setup?.channels?.couponLogs ? `<#${setup.channels.couponLogs}>` : 'não configurado',
+        inline: true
+      },
+      {
         name: 'Cupom ativo',
-        value:
-          settings.coupon?.active && settings.coupon?.code
-            ? `\`${settings.coupon.code}\` - ${settings.coupon.percent}% OFF`
-            : 'nenhum',
+        value: settings.coupon?.code
+          ? settings.coupon.active && Number(settings.coupon.usesLeft ?? 0) > 0
+            ? `\`${settings.coupon.code}\` - ${settings.coupon.percent}% OFF\nUso único: ${settings.coupon.usesLeft}/${settings.coupon.maxUses || 1}`
+            : `\`${settings.coupon.code}\` - ${settings.coupon.percent}% OFF\nStatus: ${settings.coupon.status === 'used' ? 'usado' : 'expirado'}`
+          : 'nenhum',
         inline: true
       },
       {
@@ -1294,7 +1327,7 @@ function buildCouponModal(currentCoupon) {
     .setMaxLength(20);
   const percent = new TextInputBuilder()
     .setCustomId('percent')
-    .setLabel('Percentual de desconto')
+    .setLabel('Percentual de desconto (1 a 100)')
     .setStyle(TextInputStyle.Short)
     .setValue(String(currentCoupon?.percent || 10))
     .setRequired(true)
@@ -1379,6 +1412,13 @@ function buildHostingAccessCreateModal() {
 async function logHostingEvent(guild, embed) {
   const channelId = HOSTING_LOG_CHANNEL_ID;
   const channel = await guild.channels.fetch(channelId).catch(() => null);
+  if (channel?.isTextBased()) {
+    await channel.send({ embeds: [embed] }).catch(() => null);
+  }
+}
+
+async function logCouponEvent(guild, setup, embed) {
+  const channel = await resolveConfiguredChannel(guild, setup, COUPON_LOG_CHANNEL_KEY);
   if (channel?.isTextBased()) {
     await channel.send({ embeds: [embed] }).catch(() => null);
   }
@@ -2485,11 +2525,11 @@ async function handleCouponApply(interaction) {
   return true;
 }
 
-async function handleCouponSubmit(interaction) {
+async function handleCouponSubmit(interaction, setup) {
   const code = interaction.fields.getTextInputValue('code').trim();
   const settings = getSystemSettings(interaction.guild.id);
   const ticket = getTicketByChannel(interaction.channelId);
-  const coupon = settings.coupon?.active && settings.coupon?.code ? settings.coupon : null;
+  const coupon = settings.coupon?.code ? settings.coupon : null;
 
   if (!ticket || !purchaseTypes(ticket.type)) {
     await safeReply(interaction, privateReply('Este canal não está registrado como compra.'));
@@ -2501,6 +2541,24 @@ async function handleCouponSubmit(interaction) {
     return true;
   }
 
+  if (!coupon.active || Number(coupon.usesLeft || 0) <= 0) {
+    await logCouponEvent(
+      interaction.guild,
+      setup,
+      new EmbedBuilder()
+        .setColor(colors.orange)
+        .setTitle('Tentativa em cupom expirado')
+        .addFields(
+          { name: 'Código', value: `\`${coupon.code}\``, inline: true },
+          { name: 'Usuário', value: `${interaction.user.tag} (\`${interaction.user.id}\`)`, inline: true },
+          { name: 'Status', value: coupon.status === 'used' ? 'Já utilizado' : 'Expirado', inline: true }
+        )
+        .setTimestamp()
+    );
+    await safeReply(interaction, privateReply('Esse cupom já foi utilizado ou expirou. Cadastre outro cupom para continuar.'));
+    return true;
+  }
+
   const pricing = getPlanPricing(ticket.type, settings, code);
   upsertQueueEntry(interaction.channelId, {
     couponCode: coupon.code,
@@ -2508,6 +2566,27 @@ async function handleCouponSubmit(interaction) {
     basePrice: pricing.base,
     finalPrice: pricing.final
   });
+
+  consumeSystemCoupon(interaction.guild.id, {
+    usedBy: interaction.user.id,
+    usedByTag: interaction.user.tag,
+    updatedBy: interaction.user.id
+  });
+
+  await logCouponEvent(
+    interaction.guild,
+    setup,
+    new EmbedBuilder()
+      .setColor(colors.default)
+      .setTitle('Cupom utilizado')
+      .addFields(
+        { name: 'Código', value: `\`${coupon.code}\``, inline: true },
+        { name: 'Usuário', value: `${interaction.user.tag} (\`${interaction.user.id}\`)`, inline: true },
+        { name: 'Desconto', value: `${coupon.percent}%`, inline: true },
+        { name: 'Status', value: 'Usado e expirado', inline: true }
+      )
+      .setTimestamp()
+  );
 
   await safeReply(
     interaction,
@@ -2534,7 +2613,23 @@ async function handleCouponClear(interaction, setup) {
     return true;
   }
 
+  const currentCoupon = getSystemSettings(interaction.guild.id).coupon;
   clearSystemCoupon(interaction.guild.id, interaction.user.id);
+  if (currentCoupon?.code) {
+    await logCouponEvent(
+      interaction.guild,
+      setup,
+      new EmbedBuilder()
+        .setColor(colors.orange)
+        .setTitle('Cupom expirado')
+        .addFields(
+          { name: 'Código', value: `\`${currentCoupon.code}\``, inline: true },
+          { name: 'Desconto', value: `${currentCoupon.percent}%`, inline: true },
+          { name: 'Status', value: 'Removido manualmente', inline: true }
+        )
+        .setTimestamp()
+    );
+  }
   await publishSalesPanels(interaction.guild, setup);
   await safeReply(interaction, privateReply('Cupom removido com sucesso.'));
   return true;
@@ -3144,21 +3239,40 @@ async function handleCouponCreateSubmit(interaction, setup) {
     return true;
   }
 
-  if (!Number.isFinite(percent) || percent <= 0 || percent >= 100) {
-    await safeReply(interaction, privateReply('Informe um percentual entre 1 e 99.'));
+  if (!Number.isFinite(percent) || percent <= 0 || percent > 100) {
+    await safeReply(interaction, privateReply('Informe um percentual entre 1 e 100.'));
     return true;
   }
 
-  setSystemCoupon(interaction.guild.id, {
+  const savedCoupon = setSystemCoupon(interaction.guild.id, {
     active: true,
     code: code.toUpperCase(),
     percent,
+    maxUses: 1,
+    usesLeft: 1,
+    usedCount: 0,
+    status: 'active',
     updatedBy: interaction.user.id,
     updatedAt: new Date().toISOString()
   });
 
+  await logCouponEvent(
+    interaction.guild,
+    setup,
+    new EmbedBuilder()
+      .setColor(colors.default)
+      .setTitle('Cupom criado')
+      .addFields(
+        { name: 'Código', value: `\`${savedCoupon.code}\``, inline: true },
+        { name: 'Desconto', value: `${savedCoupon.percent}%`, inline: true },
+        { name: 'Uso', value: 'Único', inline: true },
+        { name: 'Criado por', value: interaction.user.tag, inline: true }
+      )
+      .setTimestamp()
+  );
+
   await publishSalesPanels(interaction.guild, setup);
-  await safeReply(interaction, privateReply(`Cupom ${code.toUpperCase()} cadastrado com ${percent}% de desconto.`));
+  await safeReply(interaction, privateReply(`Cupom ${code.toUpperCase()} cadastrado com ${percent}% de desconto. Uso único ativado.`));
   return true;
 }
 
@@ -3361,6 +3475,11 @@ async function handleButton(interaction) {
         ...current,
         couponCode: null,
         couponApplied: false,
+        couponDiscount: null,
+        couponBasePrice: null,
+        couponFinalPrice: null,
+        couponPaymentSplitEntry: null,
+        couponPaymentSplitRemaining: null,
         couponSubmittedAt: null,
         couponSavedAt: new Date().toISOString()
       });
@@ -3380,7 +3499,20 @@ async function handleButton(interaction) {
       return true;
     }
 
-    const pricing = getSalePricing(current.planType, current.couponCode || null, getSystemSettings(interaction.guild.id));
+    const pricing = current.couponApplied && Number.isFinite(Number(current.couponFinalPrice))
+      ? {
+          plan: getPurchasePlanMeta(current.planType) || SALE_PLANS.plan_basic,
+          basePrice: Number(current.couponBasePrice || 0),
+          couponCode: current.couponCode || null,
+          couponValid: true,
+          couponDiscount: Number(current.couponDiscount || 0),
+          discountAmount: Number(((Number(current.couponBasePrice || 0) || 0) - (Number(current.couponFinalPrice || 0) || 0)).toFixed(2)),
+          finalPrice: Number(current.couponFinalPrice || 0),
+          paymentCashTotal: Number(current.couponFinalPrice || 0),
+          paymentSplitEntry: Number(current.couponPaymentSplitEntry || Number((Number(current.couponFinalPrice || 0) / 2).toFixed(2))),
+          paymentSplitRemaining: Number(current.couponPaymentSplitRemaining || Number((Number(current.couponFinalPrice || 0) / 2).toFixed(2)))
+        }
+      : getSalePricing(current.planType, current.couponCode || null, getSystemSettings(interaction.guild.id));
     await interaction.deferReply({ flags: 64 });
     await openPurchaseOrderTicket(interaction, setup, current, pricing, current.couponCode || null, Boolean(current.couponCode && !pricing.couponValid));
     clearPurchaseSession(interaction.guild.id, interaction.user.id);
@@ -3607,7 +3739,7 @@ async function handleModal(interaction) {
   }
 
   if (interaction.customId === 'coupon_submit') {
-    await handleCouponSubmit(interaction);
+    await handleCouponSubmit(interaction, setup);
     return true;
   }
 
@@ -3676,14 +3808,61 @@ async function handleModal(interaction) {
     }
 
     const couponCode = interaction.fields.getTextInputValue('coupon').trim();
-    const pricing = getSalePricing(session.planType, couponCode || null, getSystemSettings(interaction.guild.id));
+    const settings = getSystemSettings(interaction.guild.id);
+    const pricing = getSalePricing(session.planType, couponCode || null, settings);
+    const coupon = settings.coupon?.code ? settings.coupon : null;
+
+    if (coupon && String(coupon.code).trim().toLowerCase() === couponCode.toLowerCase() && (!coupon.active || Number(coupon.usesLeft || 0) <= 0)) {
+      await logCouponEvent(
+        interaction.guild,
+        setup,
+        new EmbedBuilder()
+          .setColor(colors.orange)
+          .setTitle('Tentativa em cupom expirado')
+          .addFields(
+            { name: 'Código', value: `\`${coupon.code}\``, inline: true },
+            { name: 'Usuário', value: `${interaction.user.tag} (\`${interaction.user.id}\`)`, inline: true },
+            { name: 'Status', value: coupon.status === 'used' ? 'Já utilizado' : 'Expirado', inline: true }
+          )
+          .setTimestamp()
+      );
+    }
+
     const updatedSession = {
       ...session,
       couponCode: couponCode || null,
       couponValid: Boolean(couponCode) && Boolean(pricing?.couponValid),
+      couponApplied: Boolean(couponCode) && Boolean(pricing?.couponValid),
+      couponDiscount: pricing?.couponValid ? Number(pricing.couponDiscount || 0) : null,
+      couponBasePrice: pricing?.couponValid ? Number(pricing.basePrice || 0) : null,
+      couponFinalPrice: pricing?.couponValid ? Number(pricing.finalPrice || 0) : null,
+      couponPaymentSplitEntry: pricing?.couponValid ? Number(pricing.paymentSplitEntry || 0) : null,
+      couponPaymentSplitRemaining: pricing?.couponValid ? Number(pricing.paymentSplitRemaining || 0) : null,
       couponSavedAt: new Date().toISOString()
     };
     savePurchaseSession(interaction.guild.id, interaction.user.id, updatedSession);
+
+    if (pricing?.couponValid) {
+      consumeSystemCoupon(interaction.guild.id, {
+        usedBy: interaction.user.id,
+        usedByTag: interaction.user.tag,
+        updatedBy: interaction.user.id
+      });
+      await logCouponEvent(
+        interaction.guild,
+        setup,
+        new EmbedBuilder()
+          .setColor(colors.default)
+          .setTitle('Cupom utilizado')
+          .addFields(
+            { name: 'Código', value: `\`${coupon.code}\``, inline: true },
+            { name: 'Usuário', value: `${interaction.user.tag} (\`${interaction.user.id}\`)`, inline: true },
+            { name: 'Desconto', value: `${coupon.percent}%`, inline: true },
+            { name: 'Status', value: 'Usado e expirado', inline: true }
+          )
+          .setTimestamp()
+      );
+    }
 
     await interaction.reply(privateReply(buildPurchaseFormPayload(updatedSession, getSystemSettings(interaction.guild.id))));
     return true;
