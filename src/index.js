@@ -1,4 +1,4 @@
-require('dotenv').config();
+require('./lib/loadEnv');
 
 const { Client, Collection, EmbedBuilder, Events, GatewayIntentBits, PermissionFlagsBits } = require('discord.js');
 const commands = require('./commands/setupCommands');

@@ -1,4 +1,4 @@
-require('dotenv').config();
+require('./lib/loadEnv');
 
 const { REST, Routes } = require('discord.js');
 const commands = require('./commands/setupCommands');

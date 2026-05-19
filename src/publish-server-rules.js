@@ -1,4 +1,4 @@
-require('dotenv').config();
+require('./lib/loadEnv');
 
 const { Client, Events, GatewayIntentBits } = require('discord.js');
 const { getGuildSetup } = require('./lib/store');
