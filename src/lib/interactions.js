@@ -815,6 +815,23 @@ function buildProjectAccessPanel(queueEntry) {
   };
 }
 
+function formatProjectStatus(status) {
+  switch (status) {
+    case 'waiting_approval':
+      return 'Aguardando aprovação do pagamento';
+    case 'approved':
+      return 'Pagamento aprovado';
+    case 'development':
+      return 'Bot em desenvolvimento';
+    case 'ready':
+      return 'Bot pronto';
+    case 'pending_access':
+      return 'Aguardando chave de acesso';
+    default:
+      return 'Em acompanhamento';
+  }
+}
+
 function buildProjectDeadlinePanel(queueEntry) {
   return {
     embeds: [
@@ -827,7 +844,12 @@ function buildProjectDeadlinePanel(queueEntry) {
         )
         .addFields(
           { name: 'Projeto', value: queueEntry.projectName || 'não informado', inline: true },
-          { name: 'Status', value: 'Aguardando prazo do administrador', inline: true }
+          { name: 'Status atual', value: formatProjectStatus(queueEntry.status), inline: true },
+          {
+            name: 'Prazo',
+            value: queueEntry.developmentStartDeadline || 'Aguardando definição',
+            inline: true
+          }
         )
         .setTimestamp()
     ],
@@ -837,6 +859,16 @@ function buildProjectDeadlinePanel(queueEntry) {
           .setCustomId(`project_deadline:${queueEntry.channelId}`)
           .setLabel('Definir prazo')
           .setStyle(ButtonStyle.Primary)
+      ),
+      new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId('queue_development')
+          .setLabel('Bot em desenvolvimento')
+          .setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder()
+          .setCustomId('queue_ready')
+          .setLabel('Bot pronto')
+          .setStyle(ButtonStyle.Success)
       )
     ]
   };
