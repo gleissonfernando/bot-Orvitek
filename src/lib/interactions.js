@@ -414,8 +414,8 @@ function buildPurchaseStartPayload(settings) {
 
 function buildPurchaseFormPayload(session = {}, settings = null) {
   const state = session || {};
-  const pricing = getSalePricing(state.planType, state.couponCode, settings);
-  const hasPlan = Boolean(pricing);
+  const hasPlan = Boolean(state.planType);
+  const pricing = hasPlan ? getSalePricing(state.planType, state.couponCode, settings) : null;
   const hasPayment = Boolean(state.paymentMethod);
   const hasCoupon = Boolean(state.couponCode);
   const couponNotice = state.couponCode
