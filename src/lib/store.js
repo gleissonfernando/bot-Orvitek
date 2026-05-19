@@ -320,7 +320,7 @@ function getQueueEntry(channelId) {
 
 function getQueuePosition(guildId, channelId) {
   const entries = Object.values(readDatabase().queues)
-    .filter((entry) => entry.guildId === guildId && ['approved', 'development'].includes(entry.status))
+    .filter((entry) => entry.guildId === guildId && ['waiting_approval', 'approved', 'development'].includes(entry.status))
     .sort((a, b) => new Date(a.approvedAt || a.createdAt || 0) - new Date(b.approvedAt || b.createdAt || 0));
   const index = entries.findIndex((entry) => entry.channelId === channelId);
   return {

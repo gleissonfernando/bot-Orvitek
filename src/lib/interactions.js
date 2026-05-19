@@ -261,6 +261,42 @@ function purchaseTypes(type) {
   return ['plan_basic', 'plan_pro', 'plan_lifetime', 'plan_paid', 'plan_order'].includes(type);
 }
 
+function resolvePurchasedPlanType(planType, fallback = 'plan_basic') {
+  if (planType === 'plan_premium') {
+    return 'plan_pro';
+  }
+
+  if (planType === 'plan_complete') {
+    return 'plan_lifetime';
+  }
+
+  if (planType === 'plan_basic' || planType === 'plan_pro' || planType === 'plan_lifetime') {
+    return planType;
+  }
+
+  return fallback;
+}
+
+function resolveOrderPlanType(ticket, queueEntry = null) {
+  return resolvePurchasedPlanType(queueEntry?.planType || queueEntry?.plan || ticket?.planType || ticket?.type);
+}
+
+function planTypeToClientPlan(planType) {
+  if (planType === 'plan_pro') {
+    return 'premium';
+  }
+
+  if (planType === 'plan_lifetime') {
+    return 'completo';
+  }
+
+  if (planType === 'plan_paid') {
+    return 'comprovante';
+  }
+
+  return 'basico';
+}
+
 function brl(value) {
   return new Intl.NumberFormat('pt-BR', {
     style: 'currency',
@@ -335,22 +371,32 @@ function getPurchasePlanPricing(planType, settings) {
   return getPlanPricing(planType, settings);
 }
 
-function getSalePricing(planType, couponCode = null) {
-  const plan = SALE_PLANS[planType] || null;
-  if (!plan) {
+function getSalePricing(planType, couponCode = null, settings = null) {
+  const normalizedPlanType = resolvePurchasedPlanType(planType);
+  const pricingSettings = settings || {};
+  const prices = pricingSettings.prices || { basic: 50, premium: 250, complete: 350 };
+  const priceMap = {
+    plan_basic: Number(prices.basic || 0),
+    plan_pro: Number(prices.premium || 0),
+    plan_lifetime: Number(prices.complete || prices.premium || 0)
+  };
+
+  const base = priceMap[normalizedPlanType] || null;
+  if (!Number.isFinite(base) || base <= 0) {
     return null;
   }
 
   const normalizedCode = String(couponCode || '').trim().toUpperCase();
   const couponValid = normalizedCode ? SALE_VALID_COUPONS.has(normalizedCode) : false;
+  const plan = SALE_PLANS[normalizedPlanType] || SALE_PLANS.plan_basic;
   const couponDiscount = couponValid ? Number(plan.couponDiscount || 0) : 0;
-  const discountAmount = plan.price * (couponDiscount / 100);
-  const finalPrice = Number((plan.price - discountAmount).toFixed(2));
+  const discountAmount = base * (couponDiscount / 100);
+  const finalPrice = Number((base - discountAmount).toFixed(2));
   const splitEntry = Number((finalPrice / 2).toFixed(2));
 
   return {
     plan,
-    basePrice: Number(plan.price.toFixed(2)),
+    basePrice: Number(base.toFixed(2)),
     couponCode: normalizedCode || null,
     couponValid,
     couponDiscount,
@@ -363,12 +409,12 @@ function getSalePricing(planType, couponCode = null) {
 }
 
 function buildPurchaseStartPayload(settings) {
-  return buildPurchaseFormPayload({});
+  return buildPurchaseFormPayload({}, settings);
 }
 
 function buildPurchaseFormPayload(session = {}, settings = null) {
   const state = session || {};
-  const pricing = getSalePricing(state.planType, state.couponCode);
+  const pricing = getSalePricing(state.planType, state.couponCode, settings);
   const hasPlan = Boolean(pricing);
   const hasPayment = Boolean(state.paymentMethod);
   const hasCoupon = Boolean(state.couponCode);
@@ -1771,6 +1817,9 @@ async function handleQueueAction(interaction, setup) {
     return;
   }
 
+  const queueEntry = getQueueEntry(interaction.channelId);
+  const purchasedPlanType = resolveOrderPlanType(ticket, queueEntry);
+  const clientPlan = planTypeToClientPlan(purchasedPlanType);
   const member = await interaction.guild.members.fetch(ticket.ownerId).catch(() => null);
   if (!member) {
     await interaction.reply(privateReply('Não consegui encontrar o cliente deste canal.'));
@@ -1788,7 +1837,6 @@ async function handleQueueAction(interaction, setup) {
       return;
     }
 
-    const queueEntry = getQueueEntry(interaction.channelId);
     if (!queueEntry?.accessKey) {
       await interaction.reply(privateReply('Crie a chave de acesso antes de entrar na fila de pagamento.'));
       return;
@@ -1796,12 +1844,13 @@ async function handleQueueAction(interaction, setup) {
 
     const position = getQueuePosition(interaction.guild.id, interaction.channelId);
     const settings = getSystemSettings(interaction.guild.id);
-    const pricing = getPlanPricing(ticket.type, settings, queueEntry?.couponCode || null);
+    const pricing = getPlanPricing(purchasedPlanType, settings, queueEntry?.couponCode || null);
     upsertQueueEntry(interaction.channelId, {
       guildId: interaction.guild.id,
       ownerId: ticket.ownerId,
       ownerTag: ticket.ownerTag,
-      plan: ticket.type === 'plan_pro' ? 'premium' : ticket.type === 'plan_basic' ? 'basico' : ticket.type,
+      planType: purchasedPlanType,
+      plan: clientPlan,
       status: 'waiting_approval',
       basePrice: pricing.base,
       finalPrice: pricing.final,
@@ -1843,7 +1892,6 @@ async function handleQueueAction(interaction, setup) {
   }
 
   if (interaction.customId === 'payment_reject') {
-    const queueEntry = getQueueEntry(interaction.channelId);
     const deleteAt = new Date(Date.now() + PAYMENT_REJECT_DELETE_MS);
 
     upsertQueueEntry(interaction.channelId, {
@@ -1859,7 +1907,8 @@ async function handleQueueAction(interaction, setup) {
 
     upsertClient(interaction.guild.id, ticket.ownerId, {
       userTag: ticket.ownerTag,
-      plan: ticket.type === 'plan_pro' ? 'premium' : ticket.type === 'plan_basic' ? 'basico' : ticket.type,
+      planType: purchasedPlanType,
+      plan: clientPlan,
       projectName: queueEntry?.projectName || ticket.ownerTag,
       status: 'payment_rejected',
       hostingStatus: 'payment_rejected',
@@ -1879,7 +1928,6 @@ async function handleQueueAction(interaction, setup) {
   }
 
   if (interaction.customId === 'queue_approve' || interaction.customId === 'payment_approve') {
-    const queueEntry = getQueueEntry(interaction.channelId);
     const contract = getContract(interaction.channelId);
     const projectName = queueEntry?.projectName || contract?.projectName || ticket.ownerTag;
     const accessKey = queueEntry?.accessKey;
@@ -1898,7 +1946,8 @@ async function handleQueueAction(interaction, setup) {
       guildId: interaction.guild.id,
       ownerId: ticket.ownerId,
       ownerTag: ticket.ownerTag,
-      plan: ticket.type === 'plan_pro' ? 'premium' : ticket.type === 'plan_basic' ? 'basico' : ticket.type,
+      planType: purchasedPlanType,
+      plan: clientPlan,
       status: 'approved',
       approvedAt: new Date().toISOString(),
       approvedBy: interaction.user.id,
@@ -1920,7 +1969,8 @@ async function handleQueueAction(interaction, setup) {
     });
     upsertClient(interaction.guild.id, ticket.ownerId, {
       userTag: ticket.ownerTag,
-      plan: ticket.type === 'plan_pro' ? 'premium' : ticket.type === 'plan_basic' ? 'basico' : ticket.type,
+      planType: purchasedPlanType,
+      plan: clientPlan,
       projectName,
       projectChannelId: projectChannel.id,
       accessKey,
@@ -1954,7 +2004,9 @@ async function handleQueueAction(interaction, setup) {
     upsertQueueEntry(interaction.channelId, {
       status: 'development',
       developmentAt: new Date().toISOString(),
-      developmentBy: interaction.user.id
+      developmentBy: interaction.user.id,
+      planType: purchasedPlanType,
+      plan: clientPlan
     });
     await removeConfiguredRole(member, setup, 'queue', 'Na Fila');
     await addConfiguredRole(member, setup, 'development', 'Bot em Desenvolvimento');
@@ -1965,7 +2017,9 @@ async function handleQueueAction(interaction, setup) {
   upsertQueueEntry(interaction.channelId, {
     status: 'ready',
     readyAt: new Date().toISOString(),
-    readyBy: interaction.user.id
+    readyBy: interaction.user.id,
+    planType: purchasedPlanType,
+    plan: clientPlan
   });
   await removeConfiguredRole(member, setup, 'development', 'Bot em Desenvolvimento');
   await removeConfiguredRole(member, setup, 'futureClient', 'Futuro Cliente');
@@ -1979,7 +2033,8 @@ async function handleQueueAction(interaction, setup) {
 
   upsertClient(interaction.guild.id, ticket.ownerId, {
     userTag: ticket.ownerTag,
-    plan: ticket.type === 'plan_pro' ? 'premium' : ticket.type === 'plan_basic' ? 'basico' : ticket.type,
+    planType: purchasedPlanType,
+    plan: clientPlan,
     status: 'active',
     deliveredAt: new Date().toISOString()
   });
@@ -2022,13 +2077,15 @@ async function handleContractSubmit(interaction, setup) {
 
   const settings = getSystemSettings(interaction.guild.id);
   const queueEntry = getQueueEntry(interaction.channelId);
-  const pricing = getPlanPricing(ticket.type, settings, queueEntry?.couponCode || null);
+  const purchasedPlanType = resolveOrderPlanType(ticket, queueEntry);
+  const clientPlan = planTypeToClientPlan(purchasedPlanType);
+  const pricing = getPlanPricing(purchasedPlanType, settings, queueEntry?.couponCode || null);
 
   const contract = createContract(interaction.channelId, {
     guildId: interaction.guild.id,
     userId: interaction.user.id,
     userTag: interaction.user.tag,
-    planType: ticket.type,
+    planType: purchasedPlanType,
     fullName: interaction.fields.getTextInputValue('fullName'),
     cpf: interaction.fields.getTextInputValue('cpf'),
     email: interaction.fields.getTextInputValue('email'),
@@ -2047,7 +2104,8 @@ async function handleContractSubmit(interaction, setup) {
     guildId: interaction.guild.id,
     ownerId: ticket.ownerId,
     ownerTag: ticket.ownerTag,
-    plan: ticket.type === 'plan_pro' ? 'premium' : ticket.type === 'plan_basic' ? 'basico' : ticket.type,
+    planType: purchasedPlanType,
+    plan: clientPlan,
     status: 'contract_signed',
     contractId: contract.id,
     projectName: contract.projectName,
@@ -2504,12 +2562,12 @@ async function handleHostingAccessCreateButton(interaction) {
     return true;
   }
 
+  const queueEntry = getQueueEntry(interaction.channelId);
   if (ticket.ownerId !== interaction.user.id) {
     await interaction.reply(privateReply('Apenas o cliente deste atendimento pode criar a chave de acesso.'));
     return true;
   }
 
-  const queueEntry = getQueueEntry(interaction.channelId);
   if (queueEntry?.accessKey && queueEntry?.accessPasswordHash) {
     await interaction.reply(privateReply('A chave de acesso deste canal já foi criada.'));
     return true;
@@ -2558,12 +2616,15 @@ async function handleHostingAccessCreateSubmit(interaction) {
   const projectName = botName || queueEntry.projectName || ticket.ownerTag;
   const dueAt = getNextHostingDueDate();
   const hostingCycle = getHostingCycleKey(dueAt);
+  const purchasedPlanType = resolveOrderPlanType(ticket, queueEntry);
+  const clientPlan = planTypeToClientPlan(purchasedPlanType);
 
   upsertQueueEntry(interaction.channelId, {
     guildId: interaction.guild.id,
     ownerId: ticket.ownerId,
     ownerTag: ticket.ownerTag,
-    plan: ticket.type === 'plan_pro' ? 'premium' : ticket.type === 'plan_basic' ? 'basico' : ticket.type,
+    planType: purchasedPlanType,
+    plan: clientPlan,
     status: 'access_key_created',
     projectName,
     accessKey,
@@ -2580,7 +2641,8 @@ async function handleHostingAccessCreateSubmit(interaction) {
 
   upsertClient(interaction.guild.id, ticket.ownerId, {
     userTag: ticket.ownerTag,
-    plan: ticket.type === 'plan_pro' ? 'premium' : ticket.type === 'plan_basic' ? 'basico' : ticket.type,
+    planType: purchasedPlanType,
+    plan: clientPlan,
     projectName,
     accessKey,
     accessPasswordHash: hash,
@@ -3094,7 +3156,7 @@ async function handleButton(interaction) {
       return true;
     }
 
-    const pricing = getSalePricing(current.planType, current.couponCode || null);
+    const pricing = getSalePricing(current.planType, current.couponCode || null, getSystemSettings(interaction.guild.id));
     await interaction.deferReply({ flags: 64 });
     await openPurchaseOrderTicket(interaction, setup, current, pricing, current.couponCode || null, Boolean(current.couponCode && !pricing.couponValid));
     clearPurchaseSession(interaction.guild.id, interaction.user.id);
@@ -3338,7 +3400,7 @@ async function handleModal(interaction) {
     }
 
     const couponCode = interaction.fields.getTextInputValue('coupon').trim();
-    const pricing = getSalePricing(session.planType, couponCode || null);
+    const pricing = getSalePricing(session.planType, couponCode || null, getSystemSettings(interaction.guild.id));
     const updatedSession = {
       ...session,
       couponCode: couponCode || null,
