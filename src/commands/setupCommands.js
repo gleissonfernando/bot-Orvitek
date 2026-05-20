@@ -12,14 +12,20 @@ const {
   getTicketByChannel,
   listClients,
   setRetailPromotion,
+  updateSystemSettings,
   updateTicket,
   upsertClient
 } = require('../lib/store');
-const { sendRatingRequest } = require('../lib/interactions');
+const {
+  buildSystemPanelButtons,
+  buildSystemPanelEmbed,
+  restoreStaticPanel,
+  sendRatingRequest,
+  suppressPanelRestore
+} = require('../lib/interactions');
 const { buildPromotionEmbed } = require('../lib/plans');
 const { buildNoticePayload, buildPlanSelectionPanelPayload } = require('../lib/planSelectionPanel');
 const { buildVerificationPanel } = require('../lib/verificationPanel');
-const { restoreStaticPanel, suppressPanelRestore } = require('../lib/interactions');
 const { replacePanelMessage } = require('../lib/panelUtils');
 const { buildDashboardAccessResultDm, sendDmPanel } = require('../lib/dmPanels');
 
@@ -443,6 +449,32 @@ async function salesPanelCommand(interaction) {
   await interaction.reply(buildNoticePayload(`✅ Painel de vendas enviado em ${targetChannel}.`));
 }
 
+async function systemPanelCommand(interaction) {
+  const selectedChannel = interaction.options.getChannel('canal');
+  const targetChannel = selectedChannel || interaction.channel;
+
+  if (!targetChannel?.isTextBased()) {
+    await interaction.reply(buildNoticePayload('Selecione um canal de texto ou use o comando em um canal de texto.', 0xff4757));
+    return;
+  }
+
+  updateSystemSettings(interaction.guild.id, {
+    ui: {
+      systemPanelChannelId: targetChannel.id,
+      systemPanelUpdatedBy: interaction.user.id,
+      systemPanelUpdatedAt: new Date().toISOString()
+    }
+  });
+
+  suppressPanelRestore(targetChannel.id, 15000);
+  await replacePanelMessage(targetChannel, {
+    embeds: [buildSystemPanelEmbed(interaction.guild)],
+    components: buildSystemPanelButtons()
+  }, { deleteAll: true });
+
+  await interaction.reply(buildNoticePayload(`✅ Painel de controle enviado em ${targetChannel}.`));
+}
+
 async function verificationPanelCommand(interaction) {
   await interaction.deferReply({ flags: 64 });
 
@@ -500,10 +532,10 @@ const commands = [
   {
     data: new SlashCommandBuilder()
       .setName('painel')
-      .setDescription('Envia o painel de vendas de planos.')
-      .addChannelOption((option) => option.setName('canal').setDescription('Canal onde o painel será enviado.').setRequired(false))
+      .setDescription('Envia o painel de controle do sistema.')
+      .addChannelOption((option) => option.setName('canal').setDescription('Canal onde o painel de controle será enviado.').setRequired(false))
       .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),
-    execute: salesPanelCommand
+    execute: systemPanelCommand
   }
 ];
 
