@@ -21,6 +21,36 @@ function buildVerificationSuccessDm(guildName) {
     .setTimestamp();
 }
 
+function buildDashboardVerificationCodeDm({ guildName, code, expiresAt }) {
+  const expiresText = expiresAt ? `<t:${Math.floor(new Date(expiresAt).getTime() / 1000)}:R>` : 'em alguns minutos';
+
+  return new EmbedBuilder()
+    .setColor(colors.gold)
+    .setTitle('Código de acesso da dashboard')
+    .setDescription(
+      `Recebemos uma solicitação de login na dashboard de **${guildName}**.\n\n` +
+        `Use o comando **/verificarsite** no servidor e informe o código abaixo para liberar seu acesso.`
+    )
+    .addFields(
+      { name: 'Código', value: `\`${code}\``, inline: true },
+      { name: 'Expira', value: expiresText, inline: true }
+    )
+    .setFooter({ text: 'Se você não pediu esse login, ignore esta mensagem.' })
+    .setTimestamp();
+}
+
+function buildDashboardAccessResultDm({ guildName, allowed, reason }) {
+  return new EmbedBuilder()
+    .setColor(allowed ? colors.default : colors.red)
+    .setTitle(allowed ? 'Acesso da dashboard liberado' : 'Acesso da dashboard negado')
+    .setDescription(
+      allowed
+        ? `Seu acesso à dashboard de **${guildName}** foi liberado com sucesso.`
+        : `Não consegui liberar seu acesso à dashboard de **${guildName}**.\n\nMotivo: ${reason || 'código inválido.'}`
+    )
+    .setTimestamp();
+}
+
 function buildWelcomeDm(member, verifyChannelId) {
   return new EmbedBuilder()
     .setColor(colors.gold)
@@ -174,6 +204,8 @@ module.exports = {
   buildHostingOverdueDm,
   buildAccessApprovalDm,
   buildAccessUnlockedDm,
+  buildDashboardAccessResultDm,
+  buildDashboardVerificationCodeDm,
   buildDeliveryFeedbackDm,
   buildVerificationSuccessDm,
   buildWelcomeDm,

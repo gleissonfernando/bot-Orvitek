@@ -5,6 +5,7 @@ const { privateReply } = require('../lib/replies');
 const { isStaff } = require('../lib/permissions');
 const {
   expireClient,
+  consumeDashboardVerificationCode,
   getClient,
   getGuildSetup,
   getReport,
@@ -20,6 +21,7 @@ const { buildNoticePayload, buildPlanSelectionPanelPayload } = require('../lib/p
 const { buildVerificationPanel } = require('../lib/verificationPanel');
 const { restoreStaticPanel, suppressPanelRestore } = require('../lib/interactions');
 const { replacePanelMessage } = require('../lib/panelUtils');
+const { buildDashboardAccessResultDm, sendDmPanel } = require('../lib/dmPanels');
 
 function requireStaff(interaction) {
   if (isStaff(interaction.member)) {
@@ -333,6 +335,30 @@ async function rateCommand(interaction) {
   await interaction.reply(privateReply('Enviei a avaliação no seu privado.'));
 }
 
+async function verifySiteCommand(interaction) {
+  if (!interaction.guild) {
+    await interaction.reply(privateReply('Use este comando dentro do servidor para validar o acesso da dashboard.'));
+    return;
+  }
+
+  const code = interaction.options.getString('codigo', true);
+  const result = consumeDashboardVerificationCode(interaction.guild.id, code, interaction.user.id, interaction.user.tag);
+  const dmSent = await sendDmPanel(
+    interaction.user,
+    buildDashboardAccessResultDm({
+      guildName: interaction.guild.name,
+      allowed: result.ok,
+      reason: result.reason
+    })
+  );
+
+  await interaction.reply(privateReply(
+    result.ok
+      ? `Acesso da dashboard liberado. ${dmSent ? 'Também te avisei por DM.' : 'Não consegui enviar DM, mas o acesso foi liberado.'}`
+      : `Acesso não liberado: ${result.reason} ${dmSent ? 'Também te avisei por DM.' : 'Não consegui enviar DM com o resultado.'}`
+  ));
+}
+
 async function retailCommand(interaction) {
   const mode = interaction.options.getString('modo', true);
   const active = mode === 'ativar';
@@ -460,6 +486,16 @@ const commands = [
       )
       .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),
     execute: verificationPanelCommand
+  },
+  {
+    data: new SlashCommandBuilder()
+      .setName('verificarsite')
+      .setDescription('Valida o código recebido para liberar seu acesso na dashboard.')
+      .addStringOption((option) =>
+        option.setName('codigo').setDescription('Código enviado pela dashboard ou pela equipe.').setRequired(true)
+      ),
+    allowNonOwner: true,
+    execute: verifySiteCommand
   },
   {
     data: new SlashCommandBuilder()

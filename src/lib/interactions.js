@@ -29,12 +29,15 @@ const {
   createContract,
   getContract,
   getClient,
+  createDashboardVerificationCode,
   getPayment,
   getSystemSettings,
   clearSystemCoupon,
   getHostingCycleKey,
   getHostingGraceDeadline,
   getNextHostingDueDate,
+  listDashboardAccess,
+  listDashboardVerificationCodes,
   listClients,
   setSystemCoupon,
   updateTicket,
@@ -47,6 +50,7 @@ const { runSetup } = require('./setupRunner');
 const {
   buildAccessApprovalDm,
   buildAccessUnlockedDm,
+  buildDashboardVerificationCodeDm,
   buildHostingAccessCreatedDm,
   buildDeliveryFeedbackDm,
   buildHostingBillingPanel,
@@ -920,6 +924,10 @@ function buildSystemPanelEmbed(guild) {
   const settings = getSystemSettings(guild.id);
   const boostPercent = getBoostDiscountPercent(settings);
   const clients = listClients(guild.id, null);
+  const dashboardAllowed = listDashboardAccess(guild.id, true).length;
+  const dashboardPending = listDashboardVerificationCodes(guild.id, 'pending')
+    .filter((entry) => !entry.expiresAt || Date.now() <= new Date(entry.expiresAt).getTime())
+    .length;
   const hostingPending = clients.filter((client) => client.hostingPaymentStatus === 'awaiting_review').length;
   const hostingSuspended = clients.filter((client) => client.hostingStatus === 'suspended').length;
   const hostingDeleted = clients.filter((client) => client.hostingStatus === 'deleted').length;
@@ -999,6 +1007,13 @@ function buildSystemPanelEmbed(guild) {
         inline: false
       },
       {
+        name: 'Dashboard',
+        value:
+          `Acessos liberados: **${dashboardAllowed}**\n` +
+          `Códigos pendentes: **${dashboardPending}**`,
+        inline: false
+      },
+      {
         name: 'Clientes registrados',
         value: hostingList || 'Nenhum cliente registrado.',
         inline: false
@@ -1029,6 +1044,7 @@ function buildSystemPanelButtons() {
           { label: 'Cadastrar QR Pix', value: 'panel_pix_qr_create', description: 'Salvar imagem e código copia e cola.' },
           { label: 'Upload QR Pix', value: 'panel_pix_qr_upload', description: 'Enviar imagem do QR Code no canal.' },
           { label: 'Cadastrar Chave Pix', value: 'panel_pix_key_create', description: 'Salvar chave Pix manual.' },
+          { label: 'Verificar Site', value: 'panel_site_verify', description: 'Gerar código para liberar login na dashboard.' },
           { label: 'Mudar Plano do Usuário', value: 'panel_plan_change', description: 'Alterar o plano registrado de um cliente.' },
           { label: 'Hospedagem paga', value: 'panel_hosting_paid', description: 'Marcar hospedagem de cliente como paga.' },
           { label: 'Hospedagem vencida', value: 'panel_hosting_unpaid', description: 'Marcar hospedagem de cliente como vencida.' },
@@ -1359,6 +1375,16 @@ async function handleSystemPanelButton(interaction, setup, selectedTool = intera
     return true;
   }
 
+  if (selectedTool === 'panel_site_verify') {
+    if (!isOwnerRole(interaction.member)) {
+      await safeReply(interaction, privateReply('Apenas quem tem o cargo Dono pode gerar código da dashboard.'));
+      return true;
+    }
+
+    await safeReply(interaction, buildDashboardVerificationUserSelectPayload());
+    return true;
+  }
+
   if (selectedTool === 'panel_plan_change') {
     if (!isOwnerRole(interaction.member)) {
       await safeReply(interaction, privateReply('Apenas quem tem o cargo Dono pode mudar o plano de um usuário.'));
@@ -1473,6 +1499,26 @@ function buildHostingUserSelectPayload(customId, title) {
         new UserSelectMenuBuilder()
           .setCustomId(customId)
           .setPlaceholder('Selecione o cliente')
+          .setMinValues(1)
+          .setMaxValues(1)
+      )
+    ]
+  });
+}
+
+function buildDashboardVerificationUserSelectPayload() {
+  return privateReply({
+    embeds: [
+      new EmbedBuilder()
+        .setColor(colors.default)
+        .setTitle('Verificar Site')
+        .setDescription('Selecione o usuário que vai receber o código para liberar o acesso na dashboard.')
+    ],
+    components: [
+      new ActionRowBuilder().addComponents(
+        new UserSelectMenuBuilder()
+          .setCustomId('panel_site_verify_user')
+          .setPlaceholder('Selecione o usuário')
           .setMinValues(1)
           .setMaxValues(1)
       )
@@ -3121,6 +3167,45 @@ async function handleHostingAdminUserSelect(interaction, isPaid) {
   return true;
 }
 
+async function handleDashboardVerificationUserSelect(interaction) {
+  if (!isOwnerRole(interaction.member)) {
+    await safeReply(interaction, privateReply('Apenas quem tem o cargo Dono pode gerar código da dashboard.'));
+    return true;
+  }
+
+  const userId = interaction.values?.[0];
+  const user = interaction.users?.get(userId) || await interaction.client.users.fetch(userId).catch(() => null);
+  if (!user) {
+    await safeReply(interaction, privateReply('Não consegui localizar esse usuário.'));
+    return true;
+  }
+
+  const record = createDashboardVerificationCode(interaction.guild.id, user.id, {
+    userTag: user.tag,
+    createdBy: interaction.user.id
+  });
+  const expiresText = record.expiresAt ? `<t:${Math.floor(new Date(record.expiresAt).getTime() / 1000)}:R>` : 'em breve';
+  const dmSent = await sendDmPanel(
+    user,
+    buildDashboardVerificationCodeDm({
+      guildName: interaction.guild.name,
+      code: record.code,
+      expiresAt: record.expiresAt
+    })
+  );
+
+  await safeUpdate(interaction, {
+    content:
+      `Código da dashboard gerado para ${user}.\n` +
+      `Código: \`${record.code}\`\n` +
+      `Expira: ${expiresText}\n` +
+      (dmSent ? 'Enviei o código por DM.' : 'Não consegui enviar DM. Envie o código ao usuário por outro canal seguro.'),
+    embeds: [],
+    components: []
+  });
+  return true;
+}
+
 async function applyClientPlanChange(guild, setup, userId, plan, changedByUserId) {
   const clientRecord = getClient(guild.id, userId);
   if (!clientRecord) {
@@ -4577,6 +4662,11 @@ async function handleSelect(interaction) {
 
   if (interaction.customId === 'panel_hosting_unpaid_user') {
     await handleHostingAdminUserSelect(interaction, false);
+    return true;
+  }
+
+  if (interaction.customId === 'panel_site_verify_user') {
+    await handleDashboardVerificationUserSelect(interaction);
     return true;
   }
 

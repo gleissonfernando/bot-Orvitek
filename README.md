@@ -52,6 +52,11 @@ O `npm run payments` sobe o Express em `PORT` com:
 - `POST /webhook/pagbank`
 - `GET /pagamento/:id/status`
 - `GET /pagamentos`
+- `POST /dashboard/verificacao`
+- `GET /dashboard/acesso/:guildId/:userId`
+
+As rotas da dashboard exigem `BOT_DASHBOARD_TOKEN` no header `X-Dashboard-Token` ou `Authorization: Bearer <token>`.
+A dashboard cria/registra o código em `POST /dashboard/verificacao`; depois o usuário usa `/verificarsite codigo:<codigo>` no Discord e a dashboard consulta `GET /dashboard/acesso/:guildId/:userId`.
 
 ## Testar webhook com ngrok
 
@@ -88,6 +93,7 @@ Para obter o Discord User ID: Discord -> Configurações -> Avançado -> Ativar 
 - `/ativar`
 - `/clear`
 - `/painel-verificar`
+- `/verificarsite`
 - `/painel`
 
 ## Permissoes

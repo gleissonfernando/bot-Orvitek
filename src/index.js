@@ -323,13 +323,14 @@ client.on(Events.InteractionCreate, async (interaction) => {
       return;
     }
 
-    if (interaction.commandName !== 'ativar' && !isOwnerRole(interaction.member)) {
+    const command = interaction.client.commands.get(interaction.commandName);
+    if (!command) return;
+
+    if (interaction.commandName !== 'ativar' && !command.allowNonOwner && !isOwnerRole(interaction.member)) {
       await interaction.reply(privateReply('Apenas quem tem o cargo Dono pode usar comandos slash.'));
       return;
     }
 
-    const command = interaction.client.commands.get(interaction.commandName);
-    if (!command) return;
     await command.execute(interaction);
   } catch (error) {
     if (error?.code === 10062 || String(error?.message || '').includes('Unknown interaction')) {

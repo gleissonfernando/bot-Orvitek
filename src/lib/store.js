@@ -1,5 +1,6 @@
 const fs = require('node:fs');
 const path = require('node:path');
+const crypto = require('node:crypto');
 
 const dataDir = path.join(process.cwd(), 'data');
 const dbPath = path.join(dataDir, 'database.json');
@@ -9,6 +10,8 @@ const initialData = {
     guilds: {}
   },
   settings: {},
+  dashboardVerificationCodes: {},
+  dashboardAccess: {},
   retail: {},
   queues: {},
   contracts: {},
@@ -38,6 +41,12 @@ function mergeDefaults(data) {
     },
     settings: {
       ...(data.settings || {})
+    },
+    dashboardVerificationCodes: {
+      ...(data.dashboardVerificationCodes || {})
+    },
+    dashboardAccess: {
+      ...(data.dashboardAccess || {})
     },
     counters: {
       ...initialData.counters,
@@ -136,6 +145,155 @@ function defaultSystemSettings() {
 
 function guildKey(guildId, userId) {
   return `${guildId}:${userId}`;
+}
+
+function dashboardCodeKey(guildId, code) {
+  return `${guildId}:${normalizeDashboardCode(code)}`;
+}
+
+function normalizeDashboardCode(code) {
+  return String(code || '').trim().replace(/\s+/g, '').toUpperCase();
+}
+
+function createRandomDashboardCode(data, guildId) {
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    const code = String(crypto.randomInt(100000, 1000000));
+    const existing = data.dashboardVerificationCodes[dashboardCodeKey(guildId, code)];
+    if (!existing || existing.status !== 'pending') {
+      return code;
+    }
+  }
+
+  return String(Date.now()).slice(-6);
+}
+
+function createDashboardVerificationCode(guildId, userId, payload = {}) {
+  const data = readDatabase();
+  const createdAt = nowIso();
+  const ttlMs = Number(payload.ttlMs || 10 * 60 * 1000);
+  const safeTtlMs = Number.isFinite(ttlMs) && ttlMs > 0 ? ttlMs : 10 * 60 * 1000;
+  const expiresAt = payload.expiresAt || new Date(Date.now() + safeTtlMs).toISOString();
+  const code = normalizeDashboardCode(payload.code) || createRandomDashboardCode(data, guildId);
+  const key = dashboardCodeKey(guildId, code);
+
+  data.dashboardVerificationCodes[key] = {
+    guildId,
+    userId: userId || null,
+    userTag: payload.userTag || null,
+    code,
+    status: 'pending',
+    source: payload.source || 'bot',
+    createdAt,
+    expiresAt,
+    createdBy: payload.createdBy || null,
+    usedAt: null,
+    usedBy: null,
+    usedByTag: null,
+    rejectedAt: null,
+    rejectedBy: null,
+    rejectReason: null
+  };
+
+  writeDatabase(data);
+  return data.dashboardVerificationCodes[key];
+}
+
+function consumeDashboardVerificationCode(guildId, code, userId, userTag = null) {
+  const data = readDatabase();
+  const normalizedCode = normalizeDashboardCode(code);
+  const key = dashboardCodeKey(guildId, normalizedCode);
+  const record = data.dashboardVerificationCodes[key] || null;
+  const verifiedAt = nowIso();
+
+  if (!normalizedCode || !record) {
+    return { ok: false, reason: 'Código inválido ou expirado.' };
+  }
+
+  if (record.status === 'used') {
+    return { ok: false, reason: 'Este código já foi usado.' };
+  }
+
+  if (record.status === 'revoked') {
+    return { ok: false, reason: 'Este código foi cancelado pela equipe.' };
+  }
+
+  if (record.expiresAt && Date.now() > new Date(record.expiresAt).getTime()) {
+    data.dashboardVerificationCodes[key] = {
+      ...record,
+      status: 'expired',
+      rejectedAt: verifiedAt,
+      rejectedBy: userId,
+      rejectReason: 'expired'
+    };
+    writeDatabase(data);
+    return { ok: false, reason: 'Este código expirou. Solicite um novo código.' };
+  }
+
+  if (record.userId && record.userId !== userId) {
+    data.dashboardVerificationCodes[key] = {
+      ...record,
+      rejectedAt: verifiedAt,
+      rejectedBy: userId,
+      rejectReason: 'wrong_user'
+    };
+    writeDatabase(data);
+    return { ok: false, reason: 'Este código pertence a outro usuário.' };
+  }
+
+  data.dashboardVerificationCodes[key] = {
+    ...record,
+    status: 'used',
+    usedAt: verifiedAt,
+    usedBy: userId,
+    usedByTag: userTag || null
+  };
+
+  const accessKey = guildKey(guildId, userId);
+  data.dashboardAccess[accessKey] = {
+    ...(data.dashboardAccess[accessKey] || {}),
+    guildId,
+    userId,
+    userTag: userTag || record.userTag || null,
+    allowed: true,
+    code: normalizedCode,
+    grantedAt: verifiedAt,
+    grantedBy: record.createdBy || null,
+    updatedAt: verifiedAt
+  };
+
+  const client = data.clients[accessKey];
+  if (client) {
+    data.clients[accessKey] = {
+      ...client,
+      dashboardAccess: true,
+      dashboardAccessGrantedAt: verifiedAt,
+      dashboardAccessCode: normalizedCode,
+      updatedAt: verifiedAt
+    };
+  }
+
+  writeDatabase(data);
+  return {
+    ok: true,
+    code: data.dashboardVerificationCodes[key],
+    access: data.dashboardAccess[accessKey]
+  };
+}
+
+function getDashboardAccess(guildId, userId) {
+  return readDatabase().dashboardAccess[guildKey(guildId, userId)] || null;
+}
+
+function listDashboardAccess(guildId, allowed = true) {
+  return Object.values(readDatabase().dashboardAccess).filter((entry) =>
+    entry.guildId === guildId && (allowed === null || Boolean(entry.allowed) === Boolean(allowed))
+  );
+}
+
+function listDashboardVerificationCodes(guildId, status = null) {
+  return Object.values(readDatabase().dashboardVerificationCodes).filter((entry) =>
+    entry.guildId === guildId && (!status || entry.status === status)
+  );
 }
 
 function saveGuildSetup(guildId, setup) {
@@ -481,12 +639,15 @@ module.exports = {
   addRating,
   addSuggestion,
   addWarning,
+  consumeDashboardVerificationCode,
   createContract,
+  createDashboardVerificationCode,
   createTicket,
   deleteClient,
   expireClient,
   getClient,
   getContract,
+  getDashboardAccess,
   getGuildSetup,
   getPayment,
   getPaymentByPagBankOrderId,
@@ -498,6 +659,8 @@ module.exports = {
   getSystemSettings,
   getTicketByChannel,
   listClients,
+  listDashboardAccess,
+  listDashboardVerificationCodes,
   listTickets,
   getHostingCycleKey,
   getNextHostingDueDate,
