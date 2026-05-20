@@ -97,8 +97,7 @@ function buildHostingAccessCreatedDm({ guildName, projectName, accessKey }) {
     .setTitle('🔑 Chave de acesso criada')
     .setDescription(
       `Sua chave de acesso para **${guildName}** foi criada para o projeto **${projectName || 'seu projeto'}**.\n\n` +
-        'Envie o comprovante de pagamento no ticket com a chave visível. Depois da aprovação, você receberá o acesso ao canal do projeto.\n' +
-        'A senha de acesso deve conter exatamente 4 números.'
+        'Envie o comprovante de pagamento no ticket com a chave visível. Depois da aprovação, você receberá o acesso ao canal do projeto.'
     )
     .addFields(
       { name: 'Chave de acesso', value: `\`${accessKey}\``, inline: false },

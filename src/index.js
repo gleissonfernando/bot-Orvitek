@@ -1,23 +1,21 @@
-require('./lib/loadEnv');
+require('dotenv').config();
 
 const { Client, Collection, EmbedBuilder, Events, GatewayIntentBits, PermissionFlagsBits } = require('discord.js');
 const commands = require('./commands/setupCommands');
 const { colors } = require('./config/setup');
 const {
   handleButton,
-  handlePurchaseReceiptMessage,
   handleSelect,
   handleModal,
   publishHostingReminder,
   deleteHostingAccess,
-  restoreDeletedPanel,
-  resolveConfiguredRole
+  restoreDeletedPanel
 } = require('./lib/interactions');
 const { isOwnerRole } = require('./lib/permissions');
 const { privateReply } = require('./lib/replies');
-const { addWarning, expireClient, getGuildSetup, getHostingCycleKey, getHostingGraceDeadline, getReport, listClients } = require('./lib/store');
+const { addWarning, expireClient, getGuildSetup, getHostingCycleKey, getHostingGraceDeadline, getReport, getSystemSettings, listClients } = require('./lib/store');
 const { buildWelcomeChannelEmbed, buildWelcomeDmEmbed } = require('./lib/welcome');
-const { resolveConfiguredChannel } = require('./lib/panelLookup');
+const { registerDashboardReporter } = require('./services/dashboardReporter');
 
 if (!process.env.DISCORD_TOKEN) {
   throw new Error('Configure DISCORD_TOKEN no arquivo .env.');
@@ -72,6 +70,107 @@ async function sendLifecycleLog(readyClient, title, description, color) {
   }).catch(() => null);
 }
 
+async function addInitialMemberRole(member) {
+  const setup = getGuildSetup(member.guild.id);
+  const unverifiedRoleId = process.env.UNVERIFIED_ROLE_ID || setup?.roles?.unverified || '1505626948951347221';
+  const role = await member.guild.roles.fetch(unverifiedRoleId).catch(() => null);
+  const botMember = member.guild.members.me || await member.guild.members.fetchMe().catch(() => null);
+
+  if (!role) {
+    await sendLog(
+      member.guild,
+      'generalLogs',
+      new EmbedBuilder()
+        .setColor(colors.red)
+        .setTitle('Cargo inicial não encontrado')
+        .setDescription(`Não encontrei o cargo de não verificado: \`${unverifiedRoleId}\`.`)
+        .addFields({ name: 'Usuário', value: member.user.tag, inline: true })
+        .setTimestamp()
+    );
+    return false;
+  }
+
+  if (!botMember?.permissions.has(PermissionFlagsBits.ManageRoles)) {
+    await sendLog(
+      member.guild,
+      'generalLogs',
+      new EmbedBuilder()
+        .setColor(colors.red)
+        .setTitle('Sem permissão para dar cargo')
+        .setDescription('O bot precisa da permissão **Gerenciar cargos** para aplicar o cargo automático.')
+        .addFields({ name: 'Cargo', value: `${role.name} (${role.id})`, inline: true })
+        .setTimestamp()
+    );
+    return false;
+  }
+
+  if (!role.editable) {
+    await sendLog(
+      member.guild,
+      'generalLogs',
+      new EmbedBuilder()
+        .setColor(colors.red)
+        .setTitle('Hierarquia bloqueando cargo')
+        .setDescription('Coloque o cargo do bot acima do cargo de não verificado na lista de cargos do Discord.')
+        .addFields({ name: 'Cargo bloqueado', value: `${role.name} (${role.id})`, inline: true })
+        .setTimestamp()
+    );
+    return false;
+  }
+
+  await member.roles.add(role, 'Cargo automático ao entrar no servidor');
+  return true;
+}
+
+function buildBoostDiscountEmbed(member, settings = {}) {
+  const coupon = settings?.coupon?.active && settings?.coupon?.code ? settings.coupon : null;
+  const couponText = coupon
+    ? `\n\n🎟️ **Cupom ativo:** \`${coupon.code}\`\n**Desconto do cupom:** ${coupon.percent}% OFF`
+    : '\n\nNo momento não há cupom ativo além do desconto de boost.';
+
+  return new EmbedBuilder()
+    .setColor(colors.purple)
+    .setTitle('💎 Desconto VIP liberado')
+    .setDescription(
+      `${member}, obrigado por impulsionar o servidor.\n\n` +
+        `Você ganhou **5% de desconto** enquanto mantiver o boost ativo.` +
+        couponText
+    )
+    .addFields(
+      { name: 'Benefício', value: '5% OFF em contratação elegível', inline: true },
+      { name: 'Validade', value: 'Enquanto o boost estiver ativo', inline: true }
+    )
+    .setThumbnail(member.user.displayAvatarURL({ size: 256 }))
+    .setFooter({ text: 'O desconto é aplicado automaticamente no contrato quando o boost estiver ativo.' })
+    .setTimestamp();
+}
+
+async function handleServerBoostStarted(member) {
+  const setup = getGuildSetup(member.guild.id);
+  const settings = getSystemSettings(member.guild.id);
+  const channelId = setup?.channels?.vipOnly;
+  if (!channelId) return;
+
+  const channel = await member.guild.channels.fetch(channelId).catch(() => null);
+  if (!channel?.isTextBased()) return;
+
+  await channel.permissionOverwrites.edit(member.id, {
+    ViewChannel: true,
+    SendMessages: false,
+    ReadMessageHistory: true
+  }).catch((error) => {
+    console.warn(`Nao foi possivel liberar canal VIP para ${member.user.tag}: ${error.message}`);
+  });
+
+  await channel.send({
+    content: `${member}`,
+    allowedMentions: { users: [member.id] },
+    embeds: [buildBoostDiscountEmbed(member, settings)]
+  }).catch((error) => {
+    console.warn(`Nao foi possivel enviar painel de boost para ${member.user.tag}: ${error.message}`);
+  });
+}
+
 async function shutdown(signal) {
   if (shuttingDown) return;
   shuttingDown = true;
@@ -87,6 +186,7 @@ async function shutdown(signal) {
 
 client.once(Events.ClientReady, async (readyClient) => {
   console.log(`Bot conectado como ${readyClient.user.tag}.`);
+  registerDashboardReporter(readyClient);
   await sendLifecycleLog(readyClient, 'Bot ligado', 'O bot foi iniciado e está online.', colors.default);
   startSchedulers(readyClient);
 });
@@ -95,54 +195,44 @@ process.once('SIGINT', () => shutdown('SIGINT'));
 process.once('SIGTERM', () => shutdown('SIGTERM'));
 
 client.on(Events.GuildMemberAdd, async (member) => {
+  if (member.user.bot) return;
+
   const setup = getGuildSetup(member.guild.id);
-  const verifyChannel = await resolveConfiguredChannel(member.guild, setup, 'verify');
-  const announcementTargets = [];
-  const configuredAnnouncements = await resolveConfiguredChannel(member.guild, setup, 'announcements');
-  const systemChannel = member.guild.systemChannel;
-  const envWelcomeChannel = process.env.WELCOME_CHANNEL_ID
-    ? await member.guild.channels.fetch(process.env.WELCOME_CHANNEL_ID).catch(() => null)
-    : null;
-  const generalLogsChannel = await resolveConfiguredChannel(member.guild, setup, 'generalLogs');
+  const verifyChannelId = setup?.channels?.verify;
+  const announcementsId = setup?.channels?.announcements || process.env.WELCOME_CHANNEL_ID;
 
-  for (const channel of [configuredAnnouncements, systemChannel, envWelcomeChannel, generalLogsChannel]) {
-    if (channel?.isTextBased() && !announcementTargets.some((existing) => existing.id === channel.id)) {
-      announcementTargets.push(channel);
-    }
-  }
-
-  const unverifiedRole = await resolveConfiguredRole(member.guild, setup, 'unverified', 'Não Verificado');
-  if (unverifiedRole) {
-    await member.roles.add(unverifiedRole.id).catch(() => null);
-  }
+  await addInitialMemberRole(member).catch((error) => {
+    console.warn(`Nao foi possivel adicionar cargo de nao verificado para ${member.user.tag}: ${error.message}`);
+  });
 
   await member
     .send({
-      embeds: [buildWelcomeDmEmbed(member, verifyChannel?.id)]
+      embeds: [buildWelcomeDmEmbed(member, verifyChannelId)]
     })
     .catch((error) => console.warn(`Nao foi possivel enviar DM para ${member.user.tag}: ${error.message}`));
 
-  let announced = false;
-  for (const channel of announcementTargets) {
-    announced = await channel
-      .send({ embeds: [buildWelcomeChannelEmbed(member, verifyChannel?.id)] })
-      .then(() => true)
-      .catch((error) => {
-        console.warn(`Nao foi possivel enviar mensagem de entrada em ${channel.name}: ${error.message}`);
-        return false;
-      });
-
-    if (announced) {
-      break;
+  if (announcementsId) {
+    const channel = await member.guild.channels.fetch(announcementsId).catch(() => null);
+    if (channel?.isTextBased()) {
+      await channel.send({ embeds: [buildWelcomeChannelEmbed(member, verifyChannelId)] });
     }
   }
+});
 
-  if (!announced) {
-    console.warn(`Canal de anuncios nao encontrado para boas-vindas no servidor ${member.guild.id}.`);
+client.on(Events.GuildMemberUpdate, async (oldMember, newMember) => {
+  if (newMember.user.bot) return;
+
+  const hadBoost = Boolean(oldMember.premiumSince);
+  const hasBoost = Boolean(newMember.premiumSince);
+
+  if (!hadBoost && hasBoost) {
+    await handleServerBoostStarted(newMember);
   }
 });
 
 client.on(Events.GuildMemberRemove, async (member) => {
+  if (member.user?.bot) return;
+
   const joinedAt = member.joinedAt ? member.joinedAt.getTime() : Date.now();
   const days = Math.max(0, Math.floor((Date.now() - joinedAt) / 86400000));
   const roles = member.roles?.cache
@@ -168,10 +258,7 @@ client.on(Events.GuildMemberRemove, async (member) => {
 client.on(Events.MessageCreate, async (message) => {
   if (!message.guild || message.author.bot) return;
 
-  if (await handlePurchaseReceiptMessage(message)) {
-    return;
-  }
-
+  const setup = getGuildSetup(message.guild.id);
   const forbiddenWords = (process.env.BAD_WORDS || 'palavrao').split(',').map((word) => word.trim().toLowerCase()).filter(Boolean);
   const hasBadWord = forbiddenWords.some((word) => message.content.toLowerCase().includes(word));
   const repeated = /(.)\1{8,}/.test(message.content);

@@ -1,4 +1,4 @@
-require('./lib/loadEnv');
+require('dotenv').config();
 
 const { Client, Events, GatewayIntentBits, ChannelType } = require('discord.js');
 const { categories } = require('./config/setup');

@@ -8,7 +8,6 @@ const {
   getClient,
   getGuildSetup,
   getReport,
-  getSystemSettings,
   getTicketByChannel,
   listClients,
   setRetailPromotion,
@@ -16,10 +15,10 @@ const {
   upsertClient
 } = require('../lib/store');
 const { sendRatingRequest } = require('../lib/interactions');
-const { buildPlansButtons, buildPlansEmbeds, buildPromotionEmbed } = require('../lib/plans');
+const { buildPromotionEmbed } = require('../lib/plans');
+const { buildNoticePayload, buildPlanSelectionPanelPayload } = require('../lib/planSelectionPanel');
 const { buildVerificationPanel } = require('../lib/verificationPanel');
-const { buildSystemPanelButtons, buildSystemPanelEmbed, restoreStaticPanel, suppressPanelRestore } = require('../lib/interactions');
-const { updateSystemSettings } = require('../lib/store');
+const { restoreStaticPanel, suppressPanelRestore } = require('../lib/interactions');
 const { replacePanelMessage } = require('../lib/panelUtils');
 
 function requireStaff(interaction) {
@@ -351,29 +350,20 @@ async function retailCommand(interaction) {
 
   const plansChannel = await interaction.guild.channels.fetch(setup.channels.plans).catch(() => null);
   const promotionsChannel = await interaction.guild.channels.fetch(setup.channels.promotions).catch(() => null);
-  const buyNowChannel = await interaction.guild.channels.fetch(setup.channels.buyNow).catch(() => null);
-  const systemSettings = getSystemSettings(interaction.guild.id);
 
   if (plansChannel?.isTextBased()) {
-    await replacePanelMessage(plansChannel, {
-      embeds: buildPlansEmbeds({ settings: systemSettings })
-    });
+    suppressPanelRestore(plansChannel.id, 15000);
+    await replacePanelMessage(plansChannel, buildPlanSelectionPanelPayload(), { deleteAll: true });
   }
 
   if (promotionsChannel?.isTextBased()) {
     const roleId = process.env.PROMOTION_ROLE_ID || '1505184193766752386';
+    suppressPanelRestore(promotionsChannel.id, 15000);
     await replacePanelMessage(promotionsChannel, {
       content: active ? `<@&${roleId}>` : undefined,
       allowedMentions: active ? { roles: [roleId] } : undefined,
       embeds: [buildPromotionEmbed(active)]
-    });
-  }
-
-  if (buyNowChannel?.isTextBased()) {
-    await replacePanelMessage(buyNowChannel, {
-      embeds: [buildPlansEmbeds({ settings: systemSettings })[0]],
-      components: buildPlansButtons()
-    });
+    }, { deleteAll: true });
   }
 
   await interaction.reply(privateReply(active
@@ -394,7 +384,7 @@ async function clearCommand(interaction) {
     return;
   }
 
-  await interaction.deferReply({ ephemeral: true });
+  await interaction.deferReply({ flags: 64 });
 
   suppressPanelRestore(targetChannel.id, 5000);
   let before;
@@ -413,29 +403,18 @@ async function clearCommand(interaction) {
   await interaction.editReply(`Canal limpo: ${targetChannel}.`);
 }
 
-async function systemPanelCommand(interaction) {
+async function salesPanelCommand(interaction) {
   const selectedChannel = interaction.options.getChannel('canal');
   const targetChannel = selectedChannel || interaction.channel;
 
   if (!targetChannel?.isTextBased()) {
-    await interaction.reply(privateReply('Selecione um canal de texto ou use o comando em um canal de texto.'));
+    await interaction.reply(buildNoticePayload('Selecione um canal de texto ou use o comando em um canal de texto.', 0xff4757));
     return;
   }
 
-  await replacePanelMessage(targetChannel, {
-    embeds: [buildSystemPanelEmbed(interaction.guild)],
-    components: buildSystemPanelButtons()
-  });
-
-  updateSystemSettings(interaction.guild.id, {
-    ui: {
-      systemPanelChannelId: targetChannel.id,
-      systemPanelUpdatedBy: interaction.user.id,
-      systemPanelUpdatedAt: new Date().toISOString()
-    }
-  });
-
-  await interaction.reply(privateReply(`Painel de controle enviado em ${targetChannel}.`));
+  suppressPanelRestore(targetChannel.id, 15000);
+  await replacePanelMessage(targetChannel, buildPlanSelectionPanelPayload(), { deleteAll: true });
+  await interaction.reply(buildNoticePayload(`✅ Painel de vendas enviado em ${targetChannel}.`));
 }
 
 async function verificationPanelCommand(interaction) {
@@ -452,11 +431,13 @@ async function verificationPanelCommand(interaction) {
 
   if (setup?.channels?.verify && selectedChannel && selectedChannel.id !== setup.channels.verify) {
     await interaction.editReply('Painel enviado no canal selecionado. Observação: ele é diferente do canal de verificação salvo no setup.');
-    await replacePanelMessage(targetChannel, buildVerificationPanel());
+    suppressPanelRestore(targetChannel.id, 15000);
+    await replacePanelMessage(targetChannel, buildVerificationPanel(), { deleteAll: true });
     return;
   }
 
-  await replacePanelMessage(targetChannel, buildVerificationPanel());
+  suppressPanelRestore(targetChannel.id, 15000);
+  await replacePanelMessage(targetChannel, buildVerificationPanel(), { deleteAll: true });
   await interaction.editReply(`Painel de verificação enviado em ${targetChannel}.`);
 }
 
@@ -483,10 +464,10 @@ const commands = [
   {
     data: new SlashCommandBuilder()
       .setName('painel')
-      .setDescription('Abre o painel de controle de preços e sistema.')
+      .setDescription('Envia o painel de vendas de planos.')
       .addChannelOption((option) => option.setName('canal').setDescription('Canal onde o painel será enviado.').setRequired(false))
       .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),
-    execute: systemPanelCommand
+    execute: salesPanelCommand
   }
 ];
 

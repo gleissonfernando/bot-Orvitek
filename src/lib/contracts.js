@@ -36,27 +36,29 @@ function resolvePlan(contract) {
   const pricing = getPlanPricing(contract.planType, contract.settings || {}, contract.couponCode || null);
   const plan = planInfo(contract.planType);
   const total = Number.isFinite(contract.finalPrice) ? Number(contract.finalPrice) : Number.isFinite(pricing.final) ? pricing.final : plan.total;
-  const entry = total / 2;
-  return { ...plan, total, entry, pricing };
+  const paid = Number.isFinite(contract.paidPrice) ? Number(contract.paidPrice) : total;
+  const remaining = Number.isFinite(contract.remainingPrice) ? Number(contract.remainingPrice) : 0;
+  return { ...plan, total, paid, remaining, pricing };
 }
 
-function buildContractIntroEmbed(ticket) {
+function buildContractIntroEmbed(ticket, settings = null) {
   const plan = planInfo(ticket.type);
-  const entry = plan.total / 2;
+  const pricing = getPlanPricing(ticket.type, settings || {}, null);
+  const total = Number.isFinite(pricing.final) ? pricing.final : plan.total;
 
   return new EmbedBuilder()
     .setColor(colors.gold)
-    .setTitle('Contrato Online — Orvitel-bot')
+    .setTitle('Contrato Online — Orvitek-bots')
     .setDescription(
       'Antes de iniciar a fila ou a produção, o cliente precisa preencher e aceitar o contrato digital.\n\n' +
         'Ao assinar, o contrato em PDF segue para o privado do cliente e o canal fica pronto para a criação da chave de acesso.'
     )
     .addFields(
       { name: 'Plano selecionado', value: plan.name, inline: true },
-      { name: 'Valor total', value: money(plan.total), inline: true },
-      { name: 'Entrada inicial', value: money(entry), inline: true },
-      { name: 'Regra importante', value: 'Após início do desenvolvimento, a entrada inicial não é reembolsável.' },
-      { name: 'Entrega', value: 'A produção entra na fila após aprovação da entrada. Prazo médio: até 5 dias.' }
+      { name: 'Valor do plano', value: money(total), inline: true },
+      { name: 'Pagamento', value: 'Valor integral via Pix PagBank.', inline: true },
+      { name: 'Regra importante', value: 'Após início do desenvolvimento, o valor pago não é reembolsável.' },
+      { name: 'Entrega', value: 'A produção entra na fila após confirmação do pagamento. Prazo médio: até 5 dias.' }
     )
     .setFooter({ text: 'Clique em Aceito e Assino para preencher os dados do contrato.' });
 }
@@ -74,13 +76,16 @@ function buildContractSignedFollowupEmbed(contract) {
       { name: 'Cliente', value: contract.fullName, inline: true },
       { name: 'Projeto', value: contract.projectName, inline: true },
       { name: 'Plano', value: plan.name, inline: true },
-      { name: 'Entrada para fila', value: money(plan.entry), inline: true },
+      { name: 'Valor a pagar', value: money(plan.paid), inline: true },
       {
         name: 'Desconto aplicado',
-        value: contract.couponCode ? `${contract.couponCode} (-${contract.couponPercent || 0}%)` : 'Sem cupom',
+        value: [
+          contract.couponCode ? `${contract.couponCode} (-${contract.couponPercent || 0}%)` : null,
+          contract.boostDiscountActive ? `Boost do servidor (-${contract.boostDiscountPercent || 5}%)` : null
+        ].filter(Boolean).join('\n') || 'Sem desconto adicional',
         inline: true
       },
-      { name: 'Próximo passo', value: 'Criar a chave de acesso, enviar o comprovante e aguardar aprovação.', inline: true }
+      { name: 'Próximo passo', value: 'Criar a chave de acesso, pagar pelo Pix PagBank e aguardar confirmação.', inline: true }
     );
 }
 
@@ -98,7 +103,7 @@ function buildContractButton() {
 function buildContractModal() {
   return new ModalBuilder()
     .setCustomId('contract_submit')
-    .setTitle('Contrato Orvitel-bot')
+    .setTitle('Contrato Orvitek-bots')
     .addComponents(
       new ActionRowBuilder().addComponents(
         new TextInputBuilder()
@@ -110,7 +115,7 @@ function buildContractModal() {
       new ActionRowBuilder().addComponents(
         new TextInputBuilder()
           .setCustomId('cpf')
-          .setLabel('CPF')
+          .setLabel('CPF ou CNPJ')
           .setStyle(TextInputStyle.Short)
           .setRequired(true)
       ),
@@ -141,16 +146,18 @@ function buildContractModal() {
 
 function contractText(contract) {
   const plan = resolvePlan(contract);
-  const entry = plan.entry;
-  const remaining = plan.total - entry;
+  const baseTotal = Number.isFinite(contract.basePrice) ? Number(contract.basePrice) : plan.total;
   const discountLine = contract.couponCode
-    ? `Cupom aplicado: ${contract.couponCode} (-${contract.couponPercent || 0}%)\nValor com desconto: ${money(plan.total)}\n`
+    ? `Cupom aplicado: ${contract.couponCode} (-${contract.couponPercent || 0}%)\n`
+    : '';
+  const boostLine = contract.boostDiscountActive
+    ? `Desconto por boost ativo no servidor: ${contract.boostDiscountPercent || 5}%\n`
     : '';
 
-  return `CONTRATO DE PRESTAÇÃO DE SERVIÇOS DIGITAIS — ORVITEL-BOT
+  return `CONTRATO DE PRESTAÇÃO DE SERVIÇOS DIGITAIS — ORVITEK-BOTS
 
 CONTRATADA:
-Orvitel-bot
+Orvitek-bots
 
 CONTRATANTE:
 Nome: ${contract.fullName}
@@ -161,25 +168,26 @@ Projeto/Bot: ${contract.projectName}
 Discord: ${contract.userTag} (${contract.userId})
 
 1. OBJETO DO CONTRATO
-Este contrato tem como objetivo a prestação de serviço de desenvolvimento, configuração ou personalização de bot para Discord, conforme as funcionalidades combinadas entre a Orvitel-bot e o contratante.
+Este contrato tem como objetivo a prestação de serviço de desenvolvimento, configuração ou personalização de bot para Discord, conforme as funcionalidades combinadas entre a Orvitek-bots e o contratante.
 
 2. VALOR DO SERVIÇO
 Plano contratado: ${plan.name}
-${discountLine}Valor total: ${money(plan.total)}
-Entrada inicial: ${money(entry)}
-Valor restante: ${money(remaining)}
+Valor base: ${money(baseTotal)}
+${discountLine}${boostLine}Valor final do contrato: ${money(plan.total)}
+Valor pago via Pix PagBank: ${money(plan.paid)}
+Valor restante: ${money(plan.remaining)}
 
 3. INÍCIO DO SERVIÇO
-O serviço somente será iniciado após a confirmação da entrada inicial.
+O serviço somente será iniciado após a confirmação do pagamento.
 
 4. ENTREGA DO SERVIÇO
-A Orvitel-bot se compromete a realizar o serviço conforme combinado previamente com o contratante. Alterações extras, novas funções ou mudanças fora do combinado inicial poderão gerar cobrança adicional.
+A Orvitek-bots se compromete a realizar o serviço conforme combinado previamente com o contratante. Alterações extras, novas funções ou mudanças fora do combinado inicial poderão gerar cobrança adicional.
 
 5. DESISTÊNCIA E NÃO REEMBOLSO
-Caso o contratante desista do serviço após o início do desenvolvimento, o valor inicial não será reembolsado. Esse valor será considerado taxa de serviço iniciado, cobrindo tempo técnico, planejamento, configuração, desenvolvimento inicial e reserva de agenda.
+Caso o contratante desista do serviço após o início do desenvolvimento, o valor pago não será reembolsado. Esse valor será considerado taxa de serviço iniciado, cobrindo tempo técnico, planejamento, configuração, desenvolvimento inicial e reserva de agenda.
 
-6. PAGAMENTO FINAL
-Após o bot estar pronto, o contratante deverá realizar a quitação restante para receber a entrega final, arquivos, acesso ou configuração definitiva do bot.
+6. COMPROVANTE DE PAGAMENTO
+Após a confirmação do pagamento, a Orvitek-bots enviará ao contratante um comprovante digital contendo o produto comprado, valor pago, data e identificação do pedido quando disponível.
 
 7. HOSPEDAGEM E MANUTENÇÃO
 Quando aplicável, o serviço de hospedagem é cobrado mensalmente e precisa ser regularizado até o dia 08 de cada mês.
@@ -189,10 +197,15 @@ Após 15 dias do vencimento sem regularização, a chave de acesso pode ser remo
 8. RESPONSABILIDADE DO CONTRATANTE
 O contratante deve fornecer corretamente todas as informações necessárias para a execução do serviço, como dados do servidor, permissões, cargos, canais, textos, imagens e demais informações solicitadas.
 
-9. ASSINATURA ELETRÔNICA
+9. SIGILO, CONFIDENCIALIDADE E PROTEÇÃO DE INFORMAÇÕES
+A Orvitek-bots, na qualidade de contratada, compromete-se a manter sigilo sobre informações, dados, conteúdos, mensagens, arquivos, estruturas, cargos, canais, configurações, estratégias, membros, registros internos e quaisquer demais informações às quais venha a ter acesso no servidor Discord, sistemas, painéis, contas ou ambientes digitais do contratante em razão da execução deste contrato.
+A contratada não poderá divulgar, compartilhar, vender, repassar, publicar, copiar, expor ou utilizar essas informações para finalidade diversa da execução do serviço contratado, salvo mediante autorização expressa do contratante, obrigação legal, ordem judicial ou necessidade técnica indispensável para cumprimento do serviço.
+O dever de sigilo permanece válido durante a vigência deste contrato e após o encerramento da prestação do serviço, respeitando a legislação brasileira aplicável, incluindo normas de proteção de dados, privacidade, boa-fé contratual e responsabilidade civil. A violação injustificada desta cláusula poderá sujeitar a parte infratora às medidas cabíveis e à reparação de perdas e danos comprovados.
+
+10. ASSINATURA ELETRÔNICA
 O contratante declara que aceita este contrato de forma eletrônica ao clicar em "Aceito e Assino". A assinatura eletrônica representa concordância com todos os termos descritos neste contrato.
 
-10. DISPOSIÇÕES FINAIS
+11. DISPOSIÇÕES FINAIS
 Este contrato passa a valer a partir da data de aceite eletrônico pelo contratante.
 
 Data e hora da assinatura: ${contract.signedAt}
@@ -216,7 +229,7 @@ function generateContractPdf(contract) {
       align: 'center'
     });
     doc.moveDown(0.5);
-    doc.fontSize(12).fillColor('#111111').text('Orvitel-bot', { align: 'center' });
+    doc.fontSize(12).fillColor('#111111').text('Orvitek-bots', { align: 'center' });
     doc.moveDown();
     doc.fontSize(10).fillColor('#111111').text(contractText(contract), {
       align: 'left',
@@ -244,11 +257,16 @@ function buildSignedContractEmbed(contract) {
       { name: 'Cliente', value: contract.fullName, inline: true },
       { name: 'Projeto', value: contract.projectName, inline: true },
       { name: 'Plano', value: plan.name, inline: true },
-      { name: 'Entrada para fila', value: money(plan.entry), inline: true },
-      { name: 'Valor restante', value: money(plan.total - plan.entry), inline: true },
+      { name: 'Valor a pagar', value: money(plan.paid), inline: true },
+      { name: 'Valor restante', value: money(plan.remaining), inline: true },
       {
         name: 'Cupom',
         value: contract.couponCode ? `${contract.couponCode} (-${contract.couponPercent || 0}%)` : 'Sem cupom',
+        inline: true
+      },
+      {
+        name: 'Boost',
+        value: contract.boostDiscountActive ? `${contract.boostDiscountPercent || 5}% OFF aplicado` : 'Sem boost ativo',
         inline: true
       },
       { name: 'Assinatura', value: contract.signedAt, inline: true }

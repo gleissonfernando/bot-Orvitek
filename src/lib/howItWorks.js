@@ -37,6 +37,12 @@ function buildHowItWorksEmbeds() {
           name: '6. Precisa de ajuda? Abra um ticket',
           value: 'A qualquer momento, vá em #abrir-ticket. Nossa equipe responde em até 24h nos dias úteis.'
         },
+        {
+          name: '7. Benefício de boost',
+          value:
+            'Ao dar boost no servidor, você recebe o **desconto de boost configurado** enquanto o boost estiver ativo.\n' +
+            'O canal #vip-exclusivo é liberado para visualização e o desconto é aplicado automaticamente no contrato.'
+        },
         { name: 'O que cada plano inclui', value: 'Comparativo rápido' },
         {
           name: 'Plano Básico mensal',
@@ -61,7 +67,7 @@ function buildHowItWorksEmbeds() {
             'Chargebacks sem contato prévio resultam em banimento permanente. Sempre fale conosco antes.'
         }
       )
-      .setFooter({ text: 'Para comprar, acesse o canal de planos ou fale com o suporte.' })
+      .setFooter({ text: 'Para contratar, acesse o canal de planos ou fale com o suporte.' })
   ];
 }
 

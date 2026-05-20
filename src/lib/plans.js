@@ -13,49 +13,57 @@ function discounted(value, percent) {
   return value * (1 - percent / 100);
 }
 
-function basePriceForPlan(planType, prices) {
-  if (planType === 'plan_complete') {
-    return Number(prices.complete || prices.premium || 0);
+function hasServerBoostDiscount(member) {
+  const boosterRoleId = member?.guild?.roles?.premiumSubscriberRole?.id;
+  return Boolean(member?.premiumSince || (boosterRoleId && member?.roles?.cache?.has(boosterRoleId)));
+}
+
+function getBoostDiscountPercent(settings = {}) {
+  const percent = Number(settings?.boost?.percent ?? 5);
+  if (!Number.isFinite(percent) || percent <= 0 || percent >= 100) {
+    return 0;
   }
 
-  if (planType === 'plan_pro' || planType === 'plan_lifetime' || planType === 'plan_premium') {
+  return percent;
+}
+
+function basePriceForPlan(planType, prices) {
+  if (planType === 'plan_pro' || planType === 'plan_lifetime') {
     return Number(prices.premium || 0);
   }
 
   return Number(prices.basic || 0);
 }
 
-function getPlanPricing(planType, settings = {}, couponCode = null) {
+function getPlanPricing(planType, settings = {}, couponCode = null, options = {}) {
   const activeSettings = settings || {};
-  const prices = activeSettings.prices || { basic: 50, premium: 250, complete: 350, hosting: 12 };
+  const prices = activeSettings.prices || { basic: 50, premium: 250, hosting: 12 };
   const base = basePriceForPlan(planType, prices);
-  const promotionPercent = planType === 'plan_pro' || planType === 'plan_lifetime' || planType === 'plan_premium' || planType === 'plan_complete' ? 30 : 20;
+  const promotionPercent = planType === 'plan_pro' || planType === 'plan_lifetime' ? 30 : 20;
   const promotionActive = Boolean(activeSettings.retail?.active);
   const afterPromotion = promotionActive ? discounted(base, promotionPercent) : base;
-  const normalizedCode = String(couponCode || '').trim().toUpperCase();
-  const configuredCoupon =
-    activeSettings.coupon?.active &&
-    activeSettings.coupon?.code &&
-    Number(activeSettings.coupon?.usesLeft ?? 0) > 0
-      ? activeSettings.coupon
-      : null;
-  const configuredCouponMatches =
-    configuredCoupon &&
-    normalizedCode &&
-    String(configuredCoupon.code).trim().toUpperCase() === normalizedCode;
-  const couponMatches = Boolean(configuredCouponMatches);
-  const coupon = configuredCouponMatches ? configuredCoupon : null;
-  const couponPercent = couponMatches ? Number(coupon.percent || 0) : 0;
-  const final = couponMatches ? discounted(afterPromotion, couponPercent) : afterPromotion;
+  const coupon = activeSettings.coupon?.active && activeSettings.coupon?.code ? activeSettings.coupon : null;
+  const couponMatches =
+    coupon &&
+    couponCode &&
+    String(coupon.code).trim().toLowerCase() === String(couponCode).trim().toLowerCase();
+  const afterCoupon = couponMatches ? discounted(afterPromotion, Number(coupon.percent || 0)) : afterPromotion;
+  const boostEligible = Boolean(options.boostActive ?? hasServerBoostDiscount(options.member));
+  const boostPercent = boostEligible ? getBoostDiscountPercent(activeSettings) : 0;
+  const boostActive = boostEligible && boostPercent > 0;
+  const final = boostActive ? discounted(afterCoupon, boostPercent) : afterCoupon;
 
   return {
     base,
     promotionActive,
     promotionPercent,
     afterPromotion,
+    afterCoupon,
     coupon,
     couponMatches,
-    couponPercent,
+    couponPercent: couponMatches ? Number(coupon.percent || 0) : 0,
+    boostActive,
+    boostPercent,
     final
   };
 }
@@ -93,10 +101,12 @@ function buildPlansEmbeds(input = {}) {
   const promoText = promotionActive
     ? '\n\n🔥 **Promoção ativa:** Básico com 20% OFF e Premium com 30% OFF.'
     : '';
-  const couponText = settings?.coupon?.code
-    ? settings.coupon.active && Number(settings.coupon.usesLeft ?? 0) > 0
-      ? `\n🎟️ **Cupom ativo:** \`${settings.coupon.code}\` com ${settings.coupon.percent}% OFF adicional. Uso único.`
-      : `\n🎟️ **Último cupom:** \`${settings.coupon.code}\` ${settings.coupon.status === 'used' ? 'já foi usado' : 'está expirado'}.`
+  const couponText = settings?.coupon?.active && settings?.coupon?.code
+    ? `\n🎟️ **Cupom ativo:** \`${settings.coupon.code}\` com ${settings.coupon.percent}% OFF adicional.`
+    : '';
+  const boostPercent = getBoostDiscountPercent(settings);
+  const boostText = boostPercent > 0
+    ? `\n💎 **Boost no servidor:** quem estiver impulsionando o servidor recebe ${boostPercent}% OFF enquanto o boost estiver ativo.`
     : '';
 
   return [
@@ -107,12 +117,12 @@ function buildPlansEmbeds(input = {}) {
         '**Automatize seu servidor com um bot personalizado para vendas, suporte e gerenciamento.**\n\n' +
           'Entrega rápida · Configuração inclusa · Suporte técnico · Painéis profissionais' +
           promoText +
-          couponText
+          couponText +
+          boostText
       )
       .addFields(
         { name: 'Básico', value: `${basicPrice}\nIdeal para começar com comandos, mensagens e painéis simples.`, inline: true },
         { name: 'Premium', value: `${premiumPrice}\nSistema completo com tickets, automod, relatórios, clientes e /ativar.`, inline: true },
-        { name: 'Completo', value: `${brl(prices.complete || prices.premium)}\nAcesso completo com recursos avançados e entrega profissional.`, inline: true },
         { name: 'Hospedagem', value: `${brl(prices.hosting)}/mês\nOpcional, mantém o bot online 24h.`, inline: true }
       )
       .setFooter({ text: 'Escolha um plano pelo botão abaixo. Hospedagem não entra no desconto promocional.' }),
@@ -213,7 +223,8 @@ function buildPlansEmbed(promotionActive = false) {
 function buildPlansButtons() {
   return [
     new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId('buy_plan_open').setLabel('Comprar Plano').setStyle(ButtonStyle.Success)
+      new ButtonBuilder().setCustomId('plan_basic').setLabel('Contratar Básico').setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId('plan_pro').setLabel('Contratar Premium').setStyle(ButtonStyle.Success)
     )
   ];
 }
@@ -235,5 +246,7 @@ module.exports = {
   buildPlansEmbed,
   buildPlansEmbeds,
   buildPromotionEmbed,
+  getBoostDiscountPercent,
+  hasServerBoostDiscount,
   getPlanPricing
 };

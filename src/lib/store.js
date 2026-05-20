@@ -12,6 +12,7 @@ const initialData = {
   retail: {},
   queues: {},
   contracts: {},
+  payments: {},
   clients: {},
   tickets: {},
   moderation: {},
@@ -99,20 +100,17 @@ function defaultSystemSettings() {
     prices: {
       basic: 50,
       premium: 250,
-      complete: 350,
       hosting: 12
     },
     coupon: {
       active: false,
       code: null,
       percent: 0,
-      maxUses: 1,
-      usesLeft: 0,
-      usedCount: 0,
-      status: 'inactive',
-      usedAt: null,
-      usedBy: null,
-      usedByTag: null,
+      updatedAt: null,
+      updatedBy: null
+    },
+    boost: {
+      percent: 5,
       updatedAt: null,
       updatedBy: null
     },
@@ -121,6 +119,15 @@ function defaultSystemSettings() {
     },
     retail: {
       active: false,
+      updatedAt: null,
+      updatedBy: null
+    },
+    payment: {
+      mode: 'pagbank',
+      pixKey: null,
+      pixKeyLabel: null,
+      qrCodeText: null,
+      qrCodeImageUrl: null,
       updatedAt: null,
       updatedBy: null
     }
@@ -159,6 +166,10 @@ function getSystemSettings(guildId) {
       ...defaultSystemSettings().coupon,
       ...(data.settings[guildId]?.coupon || {})
     },
+    boost: {
+      ...defaultSystemSettings().boost,
+      ...(data.settings[guildId]?.boost || {})
+    },
     ui: {
       ...defaultSystemSettings().ui,
       ...(data.settings[guildId]?.ui || {})
@@ -166,6 +177,10 @@ function getSystemSettings(guildId) {
     retail: {
       ...defaultSystemSettings().retail,
       ...(data.settings[guildId]?.retail || {})
+    },
+    payment: {
+      ...defaultSystemSettings().payment,
+      ...(data.settings[guildId]?.payment || {})
     }
   };
 }
@@ -184,6 +199,10 @@ function updateSystemSettings(guildId, payload) {
       ...current.coupon,
       ...(payload.coupon || {})
     },
+    boost: {
+      ...current.boost,
+      ...(payload.boost || {})
+    },
     ui: {
       ...current.ui,
       ...(payload.ui || {})
@@ -191,6 +210,10 @@ function updateSystemSettings(guildId, payload) {
     retail: {
       ...current.retail,
       ...(payload.retail || {})
+    },
+    payment: {
+      ...current.payment,
+      ...(payload.payment || {})
     }
   };
   writeDatabase(data);
@@ -214,14 +237,6 @@ function setSystemCoupon(guildId, payload) {
   return updateSystemSettings(guildId, {
     coupon: {
       ...payload,
-      active: true,
-      maxUses: 1,
-      usesLeft: 1,
-      usedCount: 0,
-      status: 'active',
-      usedAt: null,
-      usedBy: null,
-      usedByTag: null,
       updatedAt: nowIso()
     }
   }).coupon;
@@ -231,26 +246,10 @@ function clearSystemCoupon(guildId, updatedBy = null) {
   return updateSystemSettings(guildId, {
     coupon: {
       active: false,
-      usesLeft: 0,
-      status: 'expired',
+      code: null,
+      percent: 0,
       updatedAt: nowIso(),
       updatedBy
-    }
-  }).coupon;
-}
-
-function consumeSystemCoupon(guildId, payload = {}) {
-  return updateSystemSettings(guildId, {
-    coupon: {
-      active: false,
-      usesLeft: 0,
-      usedCount: 1,
-      status: 'used',
-      usedAt: nowIso(),
-      usedBy: payload.usedBy || null,
-      usedByTag: payload.usedByTag || null,
-      updatedAt: nowIso(),
-      updatedBy: payload.updatedBy || payload.usedBy || null
     }
   }).coupon;
 }
@@ -349,9 +348,15 @@ function getQueueEntry(channelId) {
   return readDatabase().queues[channelId] || null;
 }
 
+function listQueueEntries(guildId = null, ownerId = null) {
+  return Object.values(readDatabase().queues).filter((entry) =>
+    (!guildId || entry.guildId === guildId) && (!ownerId || entry.ownerId === ownerId)
+  );
+}
+
 function getQueuePosition(guildId, channelId) {
   const entries = Object.values(readDatabase().queues)
-    .filter((entry) => entry.guildId === guildId && ['waiting_approval', 'approved', 'development'].includes(entry.status))
+    .filter((entry) => entry.guildId === guildId && ['approved', 'development'].includes(entry.status))
     .sort((a, b) => new Date(a.approvedAt || a.createdAt || 0) - new Date(b.approvedAt || b.createdAt || 0));
   const index = entries.findIndex((entry) => entry.channelId === channelId);
   return {
@@ -375,6 +380,48 @@ function createContract(channelId, payload) {
 
 function getContract(channelId) {
   return readDatabase().contracts[channelId] || null;
+}
+
+function paymentKey(channelId, type = 'entry') {
+  return `${channelId}:${type}`;
+}
+
+function upsertPayment(channelId, payload, type = 'entry') {
+  const data = readDatabase();
+  const key = paymentKey(channelId, type);
+  data.payments[key] = {
+    ...(data.payments[key] || {}),
+    channelId,
+    type,
+    ...payload,
+    updatedAt: nowIso()
+  };
+  writeDatabase(data);
+  return data.payments[key];
+}
+
+function getPayment(channelId, type = 'entry') {
+  return readDatabase().payments[paymentKey(channelId, type)] || null;
+}
+
+function getPaymentByPagBankOrderId(orderId) {
+  if (!orderId) return null;
+  return Object.values(readDatabase().payments).find((payment) => payment.provider === 'pagbank' && payment.orderId === orderId) || null;
+}
+
+function updatePaymentByPagBankOrderId(orderId, payload) {
+  const data = readDatabase();
+  const entry = Object.entries(data.payments).find(([, payment]) => payment.provider === 'pagbank' && payment.orderId === orderId);
+  if (!entry) return null;
+
+  const [key, current] = entry;
+  data.payments[key] = {
+    ...current,
+    ...payload,
+    updatedAt: nowIso()
+  };
+  writeDatabase(data);
+  return data.payments[key];
 }
 
 function listTickets(guildId, status) {
@@ -441,7 +488,10 @@ module.exports = {
   getClient,
   getContract,
   getGuildSetup,
+  getPayment,
+  getPaymentByPagBankOrderId,
   getQueueEntry,
+  listQueueEntries,
   getQueuePosition,
   getReport,
   getRetailPromotion,
@@ -453,12 +503,13 @@ module.exports = {
   getNextHostingDueDate,
   getHostingGraceDeadline,
   saveGuildSetup,
-  consumeSystemCoupon,
   setSystemCoupon,
   setRetailPromotion,
   clearSystemCoupon,
   updateSystemSettings,
+  updatePaymentByPagBankOrderId,
   updateTicket,
+  upsertPayment,
   upsertQueueEntry,
   upsertClient
 };

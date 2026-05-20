@@ -11,8 +11,7 @@ const { saveGuildSetup } = require('./store');
 const { buildSupportRulesEmbeds } = require('./supportRules');
 const { buildServerRulesEmbeds } = require('./serverRules');
 const { buildHowItWorksEmbeds } = require('./howItWorks');
-const { buildPlansButtons, buildPlansEmbeds } = require('./plans');
-const { getSystemSettings } = require('./store');
+const { buildPlanSelectionPanelPayload } = require('./planSelectionPanel');
 const { replacePanelMessage } = require('./panelUtils');
 const { buildRenewPanelPayload, buildSuggestionsPanelPayload, buildTicketPanelPayload } = require('./staticPanels');
 
@@ -148,17 +147,28 @@ async function sendPanels(channels, report) {
   }
 
   if (channels.plans?.isTextBased()) {
-    const settings = getSystemSettings(channels.plans.guild.id);
-    await replacePanelMessage(channels.plans, {
-      embeds: buildPlansEmbeds({ settings })
-    });
+    await replacePanelMessage(channels.plans, buildPlanSelectionPanelPayload());
   }
 
-  const settings = channels.buyNow?.guild ? getSystemSettings(channels.buyNow.guild.id) : null;
   await sendPanel(
     channels.buyNow,
-    buildPlansEmbeds({ settings })[0],
-    buildPlansButtons()
+    new EmbedBuilder()
+      .setColor(colors.gold)
+      .setTitle('Adquira seu Plano')
+      .setDescription(
+        'Escolha o plano ideal para você e tenha acesso imediato ao sistema.\n\n' +
+          '**BÁSICO** — R$ XX,00/mês\nAcesso padrão ao sistema, suporte via ticket\n\n' +
+          '**PROFISSIONAL** — R$ XX,00/mês\nTudo do básico + acesso VIP + suporte prioritário\n\n' +
+          '**VITALÍCIO** — R$ XX,00 único\nAcesso permanente + todos os benefícios'
+      )
+      .setFooter({ text: 'Após o pagamento, envie o comprovante no suporte.' }),
+    [
+      new ActionRowBuilder().addComponents(
+        button('plan_basic', 'Básico', ButtonStyle.Secondary),
+        button('plan_pro', 'Profissional', ButtonStyle.Secondary),
+        button('plan_lifetime', 'Vitalício', ButtonStyle.Secondary)
+      )
+    ]
   );
   report.created.panels.push('Compra');
 

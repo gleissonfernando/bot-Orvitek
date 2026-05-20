@@ -1,4 +1,4 @@
-require('./lib/loadEnv');
+require('dotenv').config();
 
 const { Client, Events, GatewayIntentBits, PermissionFlagsBits } = require('discord.js');
 const { categories, staffRoleKeys } = require('./config/setup');
