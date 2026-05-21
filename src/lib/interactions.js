@@ -2841,10 +2841,20 @@ async function handleContractSubmit(interaction, setup) {
   });
 
   const pdfPath = await generateContractPdf(contract);
-  const pdfAttachment = new AttachmentBuilder(pdfPath, { name: `contrato-${contract.id}.pdf` });
-  const dmSent = await sendDmPanel(interaction.user, buildSignedContractEmbed(contract), [pdfAttachment]);
+  const pdfName = `contrato-${contract.id}.pdf`;
+  const contractEmbed = buildSignedContractEmbed(contract);
+  const dmSent = await interaction.user
+    .send({
+      embeds: [contractEmbed],
+      files: [{ attachment: pdfPath, name: pdfName }]
+    })
+    .then(() => true)
+    .catch((error) => {
+      console.warn(`Nao foi possivel enviar contrato em PDF por DM para ${interaction.user.tag}: ${error.message}`);
+      return false;
+    });
 
-  const logAttachment = new AttachmentBuilder(pdfPath, { name: `contrato-${contract.id}.pdf` });
+  const logAttachment = new AttachmentBuilder(pdfPath, { name: pdfName });
   const contractLogChannelId = process.env.CONTRACT_LOG_CHANNEL_ID;
   if (contractLogChannelId) {
     const logChannel = await interaction.guild.channels.fetch(contractLogChannelId).catch(() => null);
@@ -2859,6 +2869,15 @@ async function handleContractSubmit(interaction, setup) {
   await purgeChannel(interaction.channel);
 
   await interaction.channel.send(toComponentsV2(buildPreApprovedPanel(contract)));
+
+  if (!dmSent) {
+    await interaction.channel.send({
+      content: `${interaction.user}, não consegui enviar o contrato no privado. Segue o PDF assinado neste canal.`,
+      files: [{ attachment: pdfPath, name: pdfName }]
+    }).catch((error) => {
+      console.warn(`Nao foi possivel enviar contrato em PDF no canal ${interaction.channelId}: ${error.message}`);
+    });
+  }
 
   await interaction.editReply(toComponentsV2(
     dmSent

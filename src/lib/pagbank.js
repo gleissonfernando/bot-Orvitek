@@ -45,9 +45,7 @@ function splitName(name) {
 
 function isValidEmail(value) {
   const email = String(value || '').trim();
-  return email.length >= 5 &&
-    email.length <= 60 &&
-    /^[a-zA-Z0-9.!#$%&'*+/=?^_`{|}~-]{1,64}@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?){0,5}$/.test(email);
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
 }
 
 function isValidCpf(value) {
@@ -93,7 +91,7 @@ function validatePagBankCustomer(contract, discordUser = null) {
   }
 
   if (!isValidEmail(email)) {
-    errors.push('e-mail válido com até 60 caracteres');
+    errors.push('e-mail válido');
   }
 
   if (!isValidCpf(taxId) && !isValidCnpj(taxId)) {
