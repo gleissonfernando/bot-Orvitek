@@ -354,7 +354,7 @@ async function verifySiteCommand(interaction) {
 
   await interaction.editReply(toComponentsV2(
     result.ok
-      ? `Seu codigo da Orvitek e: **${result.code}**\nDigite esse codigo na dashboard.`
+      ? `Seu código da Orvitek é: **${result.code}**\nDigite esse código na dashboard.\nExpira em 5 minutos.`
       : result.message
   ));
 }
@@ -364,8 +364,18 @@ function stripTrailingSlashes(value) {
 }
 
 function getDashboardIssueEndpoint() {
-  const baseUrl = stripTrailingSlashes(process.env.DASHBOARD_URL);
-  return baseUrl ? `${baseUrl}/api/auth/panel/issue` : null;
+  const botApiUrl = String(process.env.BOT_API_URL || '').trim();
+  const dashboardApiUrl = String(process.env.DASHBOARD_API_URL || '').trim();
+
+  if (!botApiUrl || !dashboardApiUrl) {
+    return { ok: false, message: 'Configure BOT_API_URL e DASHBOARD_API_URL no .env para usar este comando.' };
+  }
+
+  if (botApiUrl !== dashboardApiUrl) {
+    return { ok: false, message: 'BOT_API_URL e DASHBOARD_API_URL precisam ser exatamente iguais.' };
+  }
+
+  return { ok: true, url: `${stripTrailingSlashes(botApiUrl)}/api/auth/panel/issue` };
 }
 
 function buildDashboardIssueBody(interaction) {
@@ -416,8 +426,8 @@ async function issueDashboardPanelCode(interaction) {
   const endpoint = getDashboardIssueEndpoint();
   const token = String(process.env.BOT_DASHBOARD_TOKEN || '').trim();
 
-  if (!endpoint) {
-    return { ok: false, message: 'Configure DASHBOARD_URL no .env para usar este comando.' };
+  if (!endpoint.ok) {
+    return { ok: false, message: endpoint.message };
   }
 
   if (!token) {
@@ -432,7 +442,7 @@ async function issueDashboardPanelCode(interaction) {
   const timeout = setTimeout(() => controller.abort(), DASHBOARD_ISSUE_TIMEOUT_MS);
 
   try {
-    const response = await fetch(endpoint, {
+    const response = await fetch(endpoint.url, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -443,7 +453,7 @@ async function issueDashboardPanelCode(interaction) {
     });
     const payload = await readDashboardResponse(response);
 
-    if (!response.ok || !payload?.ok) {
+    if (!response.ok || payload?.success !== true) {
       return { ok: false, message: dashboardErrorMessage(payload, response) };
     }
 

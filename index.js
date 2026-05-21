@@ -74,7 +74,7 @@ app.post('/api/auth/panel/issue', requireDashboardToken, (req, res) => {
     });
 
     res.status(201).json({
-      ok: true,
+      success: true,
       code: record.code,
       expiresAt: record.expiresAt
     });
