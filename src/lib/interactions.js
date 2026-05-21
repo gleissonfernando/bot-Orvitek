@@ -16,6 +16,7 @@ const crypto = require('node:crypto');
 const { categories, colors, roleSpecs, staffRoleKeys } = require('../config/setup');
 const { isOwnerRole, isStaff } = require('./permissions');
 const { privateReply } = require('./replies');
+const { toComponentsV2 } = require('./componentsV2');
 const {
   addRating,
   addSuggestion,
@@ -183,10 +184,11 @@ function resolveGuildSetup(guild) {
 
 async function safeReply(interaction, payload) {
   try {
+    const nextPayload = toComponentsV2(payload);
     if (interaction.replied || interaction.deferred) {
-      await interaction.followUp(payload);
+      await interaction.followUp(nextPayload);
     } else {
-      await interaction.reply(payload);
+      await interaction.reply(nextPayload);
     }
     return true;
   } catch (error) {
@@ -200,7 +202,7 @@ async function safeReply(interaction, payload) {
 
 async function safeUpdate(interaction, payload) {
   try {
-    await interaction.update(payload);
+    await interaction.update(toComponentsV2(payload));
     return true;
   } catch (error) {
     if (isUnknownInteraction(error)) {
@@ -1335,11 +1337,11 @@ async function handleSystemPanelButton(interaction, setup, selectedTool = intera
       const roleId = process.env.PROMOTION_ROLE_ID || '1505184193766752386';
       const promotionsChannel = setup?.channels?.promotions ? await interaction.guild.channels.fetch(setup.channels.promotions).catch(() => null) : null;
       if (promotionsChannel?.isTextBased()) {
-        await promotionsChannel.send({
+        await promotionsChannel.send(toComponentsV2({
           content: `<@&${roleId}>`,
           allowedMentions: { roles: [roleId] },
           embeds: [buildPromotionEmbed(true)]
-        }).catch(() => null);
+        })).catch(() => null);
       }
     }
     await safeReply(
@@ -1584,7 +1586,7 @@ async function logHostingEvent(guild, embed) {
   const channelId = HOSTING_LOG_CHANNEL_ID;
   const channel = await guild.channels.fetch(channelId).catch(() => null);
   if (channel?.isTextBased()) {
-    await channel.send({ embeds: [embed] }).catch(() => null);
+    await channel.send(toComponentsV2({ embeds: [embed] })).catch(() => null);
   }
 }
 
@@ -1628,9 +1630,9 @@ async function revokeHostingAccess(guild, clientRecord, options = {}) {
   });
 
   if (member?.user) {
-    await member.user.send({
+    await member.user.send(toComponentsV2({
       embeds: [buildHostingOverdueDm({ guildName: guild.name, projectName: clientRecord.projectName })]
-    }).catch(() => null);
+    })).catch(() => null);
   }
 
   await logHostingEvent(
@@ -1726,7 +1728,7 @@ async function deleteHostingAccess(guild, clientRecord, options = {}) {
     }
 
     await clearProjectFinalPanels(channel);
-    await channel.send({
+    await channel.send(toComponentsV2({
       embeds: [
         new EmbedBuilder()
           .setColor(colors.red)
@@ -1742,17 +1744,17 @@ async function deleteHostingAccess(guild, clientRecord, options = {}) {
           )
           .setTimestamp()
       ]
-    }).catch(() => null);
+    })).catch(() => null);
 
     if (!projectChannelCanBeDeleted) {
-      await channel.send(buildProjectSupportPanel({
+      await channel.send(toComponentsV2(buildProjectSupportPanel({
         ...(queueEntry || {}),
         channelId: queueChannelId || channel.id,
         ownerId: clientRecord.userId,
         projectName: clientRecord.projectName || queueEntry?.projectName || 'não informado',
         projectChannelId: channel.id,
         productionStatusLabel: 'Contrato encerrado'
-      })).catch(() => null);
+      }))).catch(() => null);
     }
   }
 
@@ -1773,7 +1775,7 @@ async function deleteHostingAccess(guild, clientRecord, options = {}) {
   }
 
   if (member?.user) {
-    await member.user.send({
+    await member.user.send(toComponentsV2({
       embeds: [
         new EmbedBuilder()
           .setColor(colors.red)
@@ -1783,7 +1785,7 @@ async function deleteHostingAccess(guild, clientRecord, options = {}) {
               'Sua chave foi excluída do sistema. Para regularizar ou contratar novamente, chame o suporte.'
           )
       ]
-    }).catch(() => null);
+    })).catch(() => null);
   }
 
   await logHostingEvent(
@@ -1879,7 +1881,7 @@ async function publishHostingReminder(guild, clientRecord) {
     await channel.messages.delete(previousId).catch(() => null);
   }
 
-  const message = await channel.send(panel).catch(() => null);
+  const message = await channel.send(toComponentsV2(panel)).catch(() => null);
   if (message) {
     upsertClient(guild.id, clientRecord.userId, {
       hostingReminderMessageId: message.id,
@@ -2053,7 +2055,7 @@ async function openTicket(interaction, setup, type, reason = null) {
     ticketMentions.push(`<@&${TICKET_ALERT_ROLE_ID}>`);
   }
 
-  await channel.send({
+  await channel.send(toComponentsV2({
     content: ticketMentions.join(' '),
     allowedMentions: {
       users: [interaction.user.id],
@@ -2101,13 +2103,13 @@ async function openTicket(interaction, setup, type, reason = null) {
       })()
     ],
     components: purchaseTypes(type) ? [] : buildTicketActions(type, false, Boolean(settings.coupon?.active && settings.coupon?.code))
-  });
+  }));
 
   if (purchaseTypes(type)) {
-    await channel.send({
+    await channel.send(toComponentsV2({
       embeds: [buildContractIntroEmbed(ticket, settings)],
       components: buildContractOnlyActions()
-    });
+    }));
   }
 
   await interaction.reply(privateReply(`Ticket criado: ${channel}`));
@@ -2127,13 +2129,13 @@ async function handleTicketAction(interaction, setup) {
 
   if (interaction.customId === 'ticket_claim') {
     updateTicket(interaction.channelId, { claimedBy: interaction.user.id });
-    await interaction.reply({ content: `Ticket assumido por ${interaction.user}.` });
+    await interaction.reply(toComponentsV2({ content: `Ticket assumido por ${interaction.user}.` }));
     return;
   }
 
   if (interaction.customId === 'ticket_escalate') {
     const reports = setup.channels.reports ? `<#${setup.channels.reports}>` : 'relatórios';
-    await interaction.reply({ content: `Ticket escalado para ${reports}.` });
+    await interaction.reply(toComponentsV2({ content: `Ticket escalado para ${reports}.` }));
     return;
   }
 
@@ -2142,7 +2144,7 @@ async function handleTicketAction(interaction, setup) {
   if (member) {
     await sendRatingRequest(member.user, ticket.id);
   }
-  await interaction.reply({ content: 'Ticket fechado. Este canal será removido em 10 segundos.' });
+  await interaction.reply(toComponentsV2({ content: 'Ticket fechado. Este canal será removido em 10 segundos.' }));
   setTimeout(() => interaction.channel.delete('Ticket fechado').catch(() => null), 10000);
 }
 
@@ -2239,7 +2241,7 @@ async function approveQueuePayment(interaction, setup, ticket, member, approvedB
   await applyProjectProgressRoles(member, setup, 'queue');
   const position = getQueuePosition(interaction.guild.id, interaction.channelId);
   const projectPayload = { ...queueEntry, channelId: interaction.channelId, projectName, accessKey, projectChannelId: projectChannel.id };
-  await projectChannel.send(buildProjectAccessPanel(projectPayload)).catch(() => null);
+  await projectChannel.send(toComponentsV2(buildProjectAccessPanel(projectPayload))).catch(() => null);
 
   const dmPayload = buildAccessApprovalDm({
     guildName: interaction.guild.name,
@@ -2317,12 +2319,12 @@ async function handleQueueAction(interaction, setup) {
 
     if (paymentMode === 'pix_key' || paymentMode === 'qr_code') {
       if (paymentMode === 'pix_key' && !settings.payment?.pixKey) {
-        await interaction.editReply('A chave Pix manual ainda não foi cadastrada no /painel.');
+        await interaction.editReply(toComponentsV2('A chave Pix manual ainda não foi cadastrada no /painel.'));
         return;
       }
 
       if (paymentMode === 'qr_code' && !settings.payment?.qrCodeText && !settings.payment?.qrCodeImageUrl) {
-        await interaction.editReply('O QR Code Pix manual ainda não foi cadastrado no /painel.');
+        await interaction.editReply(toComponentsV2('O QR Code Pix manual ainda não foi cadastrado no /painel.'));
         return;
       }
 
@@ -2361,21 +2363,21 @@ async function handleQueueAction(interaction, setup) {
         requestedAt: new Date().toISOString()
       });
 
-      await interaction.channel.send({
+      await interaction.channel.send(toComponentsV2({
         content:
           `${interaction.user}, pagamento Pix enviado. Clientes na frente no momento: **${position.ahead}**.` +
           (pricing.couponMatches ? `\nCupom aplicado: **${pricing.coupon.code}** (-${pricing.coupon.percent}%).` : '') +
           (pricing.boostActive ? `\nDesconto de boost aplicado: **${pricing.boostPercent}%** enquanto o boost estiver ativo.` : ''),
         embeds: [buildManualPixPaymentEmbed(settings, signedContract, pricing.payment)],
         components: buildManualPixPaymentActions()
-      });
-      await interaction.editReply(paymentMode === 'pix_key' ? 'Chave Pix enviada no canal.' : 'QR Code Pix enviado no canal.');
+      }));
+      await interaction.editReply(toComponentsV2(paymentMode === 'pix_key' ? 'Chave Pix enviada no canal.' : 'QR Code Pix enviado no canal.'));
       await deleteActionPanel(interaction);
       return;
     }
 
     if (!isPagBankConfigured()) {
-      await interaction.editReply('O PagBank ainda não está configurado. Defina PAGBANK_TOKEN no .env ou selecione QR Code/chave Pix no /painel.');
+      await interaction.editReply(toComponentsV2('O PagBank ainda não está configurado. Defina PAGBANK_TOKEN no .env ou selecione QR Code/chave Pix no /painel.'));
       return;
     }
 
@@ -2401,14 +2403,14 @@ async function handleQueueAction(interaction, setup) {
       }
     } catch (error) {
       if (String(error.message || '').startsWith('Dados do contrato inválidos')) {
-        await interaction.editReply({
+        await interaction.editReply(toComponentsV2({
           content: `${error.message}\n\nClique em **Corrigir contrato** e preencha novamente com dados reais.`,
           components: buildContractCorrectionActions()
-        });
+        }));
         return;
       }
 
-      await interaction.editReply(`Não consegui gerar o Pix pelo PagBank: ${error.message}`);
+      await interaction.editReply(toComponentsV2(`Não consegui gerar o Pix pelo PagBank: ${error.message}`));
       return;
     }
 
@@ -2433,15 +2435,15 @@ async function handleQueueAction(interaction, setup) {
       requestedAt: new Date().toISOString()
     });
 
-    await interaction.channel.send({
+    await interaction.channel.send(toComponentsV2({
       content:
         `${interaction.user}, Pix PagBank gerado. Clientes na frente no momento: **${position.ahead}**.` +
         (pricing.couponMatches ? `\nCupom aplicado: **${pricing.coupon.code}** (-${pricing.coupon.percent}%).` : '') +
         (pricing.boostActive ? `\nDesconto de boost aplicado: **${pricing.boostPercent}%** enquanto o boost estiver ativo.` : ''),
       embeds: [buildPagBankPaymentEmbed(payment, signedContract)],
       components: buildPagBankPaymentActions()
-    });
-    await interaction.editReply(reusedPayment ? 'Pix PagBank reenviado no canal.' : 'Pix PagBank gerado no canal.');
+    }));
+    await interaction.editReply(toComponentsV2(reusedPayment ? 'Pix PagBank reenviado no canal.' : 'Pix PagBank gerado no canal.'));
     await deleteActionPanel(interaction);
     return;
   }
@@ -2474,7 +2476,7 @@ async function handleQueueAction(interaction, setup) {
     try {
       order = await consultOrder(payment.orderId);
     } catch (error) {
-      await interaction.editReply(`Não consegui consultar o PagBank: ${error.message}`);
+      await interaction.editReply(toComponentsV2(`Não consegui consultar o PagBank: ${error.message}`));
       return;
     }
 
@@ -2496,26 +2498,26 @@ async function handleQueueAction(interaction, setup) {
     });
 
     if (!status.paid) {
-      await interaction.editReply(`Pagamento ainda não confirmado pelo PagBank. Status atual: ${status.status}.`);
+      await interaction.editReply(toComponentsV2(`Pagamento ainda não confirmado pelo PagBank. Status atual: ${status.status}.`));
       return;
     }
 
     const latestQueueEntry = getQueueEntry(interaction.channelId);
     if (latestQueueEntry?.status === 'approved' && latestQueueEntry.projectChannelId) {
-      await interaction.editReply(`Pagamento já confirmado e projeto já liberado em <#${latestQueueEntry.projectChannelId}>.`);
+      await interaction.editReply(toComponentsV2(`Pagamento já confirmado e projeto já liberado em <#${latestQueueEntry.projectChannelId}>.`));
       return;
     }
 
     const approval = await approveQueuePayment(interaction, setup, ticket, member, interaction.user.id);
     if (!approval.ok) {
-      await interaction.editReply(approval.reason);
+      await interaction.editReply(toComponentsV2(approval.reason));
       return;
     }
 
-    await interaction.channel.send({
+    await interaction.channel.send(toComponentsV2({
       embeds: [buildPagBankPaymentEmbed(updatedPayment, signedContract)]
-    }).catch(() => null);
-    await interaction.editReply(`Pagamento confirmado pelo PagBank. Canal do projeto criado: ${approval.projectChannel}. Posição atual: **${approval.position.position}**.`);
+    })).catch(() => null);
+    await interaction.editReply(toComponentsV2(`Pagamento confirmado pelo PagBank. Canal do projeto criado: ${approval.projectChannel}. Posição atual: **${approval.position.position}**.`));
     await deleteActionPanel(interaction);
     return;
   }
@@ -2578,7 +2580,7 @@ async function handleQueueAction(interaction, setup) {
       }
     }
 
-    await interaction.reply('Canal será apagado em 5 segundos.');
+    await interaction.reply(toComponentsV2('Canal será apagado em 5 segundos.'));
     await deleteActionPanel(interaction);
     setTimeout(() => interaction.channel.delete('Canal pré aprovado apagado pelo painel').catch(() => null), 5000);
     return;
@@ -2614,9 +2616,9 @@ async function handleQueueAction(interaction, setup) {
       accessPasswordSalt: null
     });
 
-    await interaction.reply(
+    await interaction.reply(toComponentsV2(
       `Pagamento recusado. Se o pagamento não for regularizado, este atendimento será apagado automaticamente em 3 horas: <t:${Math.floor(deleteAt.getTime() / 1000)}:R>.`
-    );
+    ));
     await deleteActionPanel(interaction);
     return;
   }
@@ -2641,7 +2643,7 @@ async function handleQueueAction(interaction, setup) {
       return;
     }
 
-    await interaction.reply(`Pagamento aprovado. Canal do projeto criado: ${approval.projectChannel}. Posição atual: **${approval.position.position}**. Prazo médio: até 5 dias.`);
+    await interaction.reply(toComponentsV2(`Pagamento aprovado. Canal do projeto criado: ${approval.projectChannel}. Posição atual: **${approval.position.position}**. Prazo médio: até 5 dias.`));
     await deleteActionPanel(interaction);
     return;
   }
@@ -2655,7 +2657,7 @@ async function handleQueueAction(interaction, setup) {
       developmentBy: interaction.user.id
     });
     await applyProjectProgressRoles(member, setup, 'development');
-    await interaction.reply(`${member}, seu bot entrou em **desenvolvimento**. A equipe vai atualizar este canal conforme avançar.`);
+    await interaction.reply(toComponentsV2(`${member}, seu bot entrou em **desenvolvimento**. A equipe vai atualizar este canal conforme avançar.`));
     return;
   }
 
@@ -2691,10 +2693,10 @@ async function handleQueueAction(interaction, setup) {
     deliveredAt: new Date().toISOString()
   });
 
-  await interaction.reply(
+  await interaction.reply(toComponentsV2(
     `${member}, seu bot está **pronto**.\n\n` +
       'Por favor, teste o projeto e envie um feedback neste canal dizendo se está tudo certo ou se precisa de algum ajuste.'
-  );
+  ));
   await sendDmPanel(member.user, buildDeliveryFeedbackDm(interaction.guild.name));
 }
 
@@ -2718,12 +2720,12 @@ async function handleContractSubmit(interaction, setup) {
 
   const ticket = getTicketByChannel(interaction.channelId);
   if (!ticket || !purchaseTypes(ticket.type)) {
-    await interaction.editReply('Este canal não possui um contrato de compra pendente.');
+    await interaction.editReply(toComponentsV2('Este canal não possui um contrato de compra pendente.'));
     return;
   }
 
   if (ticket.ownerId !== interaction.user.id && !isOwnerRole(interaction.member)) {
-    await interaction.editReply('Apenas o cliente deste atendimento pode assinar o contrato.');
+    await interaction.editReply(toComponentsV2('Apenas o cliente deste atendimento pode assinar o contrato.'));
     return;
   }
 
@@ -2742,7 +2744,7 @@ async function handleContractSubmit(interaction, setup) {
   try {
     validatePagBankCustomer(contractFields, interaction.user);
   } catch (error) {
-    await interaction.editReply(error.message);
+    await interaction.editReply(toComponentsV2(error.message));
     return;
   }
 
@@ -2793,22 +2795,22 @@ async function handleContractSubmit(interaction, setup) {
   if (contractLogChannelId) {
     const logChannel = await interaction.guild.channels.fetch(contractLogChannelId).catch(() => null);
     if (logChannel?.isTextBased()) {
-      await logChannel.send({
+      await logChannel.send(toComponentsV2({
         embeds: [buildSignedContractEmbed(contract)],
         files: [logAttachment]
-      }).catch(() => null);
+      })).catch(() => null);
     }
   }
 
   await purgeChannel(interaction.channel);
 
-  await interaction.channel.send(buildPreApprovedPanel(contract));
+  await interaction.channel.send(toComponentsV2(buildPreApprovedPanel(contract)));
 
-  await interaction.editReply(
+  await interaction.editReply(toComponentsV2(
     dmSent
       ? 'Contrato assinado. O PDF foi enviado no seu privado.'
       : 'Contrato assinado. Não consegui enviar DM, mas o documento foi gerado e a etapa foi liberada.'
-  );
+  ));
 }
 
 async function purgeChannel(channel) {
@@ -2855,7 +2857,7 @@ async function createSupportCall(guild, setup, member) {
 
 async function sendRatingRequest(user, ticketId = 'manual') {
   await user
-    .send({
+    .send(toComponentsV2({
       embeds: [
         new EmbedBuilder()
           .setColor(colors.gold)
@@ -2872,7 +2874,7 @@ async function sendRatingRequest(user, ticketId = 'manual') {
           )
         )
       ]
-    })
+    }))
     .catch(() => null);
 }
 
@@ -2897,7 +2899,7 @@ async function handleSuggestionSubmit(interaction, setup) {
     : null;
 
   if (channel?.isTextBased()) {
-    const message = await channel.send({
+    const message = await channel.send(toComponentsV2({
       embeds: [
         new EmbedBuilder()
           .setColor(colors.purple)
@@ -2906,7 +2908,7 @@ async function handleSuggestionSubmit(interaction, setup) {
           .addFields({ name: 'Enviada por', value: interaction.user.tag })
           .setTimestamp()
       ]
-    });
+    }));
     await message.react('⬆️').catch(() => null);
     await message.react('⬇️').catch(() => null);
   }
@@ -2990,7 +2992,7 @@ async function handleCouponSubmit(interaction) {
     interaction,
     privateReply(`Cupom aplicado com sucesso. Novo valor do plano: ${brl(pricing.final)}.`)
   );
-  await interaction.channel.send({
+  await interaction.channel.send(toComponentsV2({
     embeds: [
       new EmbedBuilder()
         .setColor(colors.default)
@@ -3002,7 +3004,7 @@ async function handleCouponSubmit(interaction) {
           ...(pricing.boostActive ? [{ name: 'Boost ativo', value: `${pricing.boostPercent}% OFF adicional enquanto o boost estiver ativo.`, inline: true }] : [])
         )
     ]
-  }).catch(() => null);
+  })).catch(() => null);
   return true;
 }
 
@@ -3022,7 +3024,7 @@ async function handleHostingSelfPaid(interaction) {
   const [, channelId] = interaction.customId.split(':');
   const clientRecord = findClientByProjectChannel(interaction.guild.id, channelId);
   if (!clientRecord || clientRecord.userId !== interaction.user.id) {
-    await interaction.reply({ content: 'Não encontrei uma cobrança ativa para você.' });
+    await interaction.reply(toComponentsV2({ content: 'Não encontrei uma cobrança ativa para você.' }));
     return true;
   }
 
@@ -3033,9 +3035,9 @@ async function handleHostingSelfPaid(interaction) {
 
   const member = await interaction.guild.members.fetch(interaction.user.id).catch(() => null);
   if (member?.user) {
-    await member.user.send({
+    await member.user.send(toComponentsV2({
       embeds: [buildHostingPaymentInstructionDm({ guildName: interaction.guild.name, projectName: clientRecord.projectName })]
-    }).catch(() => null);
+    })).catch(() => null);
   }
 
   await logHostingEvent(
@@ -3050,7 +3052,7 @@ async function handleHostingSelfPaid(interaction) {
       .setTimestamp()
   );
 
-  await interaction.reply({ content: 'Confirmação recebida. Envie o comprovante no ticket para validação.' });
+  await interaction.reply(toComponentsV2({ content: 'Confirmação recebida. Envie o comprovante no ticket para validação.' }));
   return true;
 }
 
@@ -3058,7 +3060,7 @@ async function handleHostingSelfUnpaid(interaction) {
   const [, channelId] = interaction.customId.split(':');
   const clientRecord = findClientByProjectChannel(interaction.guild.id, channelId);
   if (!clientRecord || clientRecord.userId !== interaction.user.id) {
-    await interaction.reply({ content: 'Não encontrei uma cobrança ativa para você.' });
+    await interaction.reply(toComponentsV2({ content: 'Não encontrei uma cobrança ativa para você.' }));
     return true;
   }
 
@@ -3069,7 +3071,7 @@ async function handleHostingSelfUnpaid(interaction) {
 
   const member = await interaction.guild.members.fetch(interaction.user.id).catch(() => null);
   if (member?.user) {
-    await member.user.send({
+    await member.user.send(toComponentsV2({
       embeds: [
         new EmbedBuilder()
           .setColor(colors.red)
@@ -3079,10 +3081,10 @@ async function handleHostingSelfUnpaid(interaction) {
               'Abra um ticket para regularizar a hospedagem e recuperar o acesso dentro do prazo de tolerância.'
           )
       ]
-    }).catch(() => null);
+    })).catch(() => null);
   }
 
-  await interaction.reply({ content: 'Acesso interrompido. Você receberá as instruções por DM.' });
+  await interaction.reply(toComponentsV2({ content: 'Acesso interrompido. Você receberá as instruções por DM.' }));
   return true;
 }
 
@@ -3254,10 +3256,7 @@ async function handleClientPlanUserSelect(interaction) {
     return true;
   }
 
-  await safeUpdate(interaction, {
-    embeds: buildClientPlanSelectPayload(userId, clientRecord).embeds,
-    components: buildClientPlanSelectPayload(userId, clientRecord).components
-  });
+  await safeUpdate(interaction, buildClientPlanSelectPayload(userId, clientRecord));
   return true;
 }
 
@@ -3332,11 +3331,11 @@ async function handleClientDeleteUserSelect(interaction, setup) {
 
   const user = member?.user || await interaction.client.users.fetch(userId).catch(() => null);
   if (user) {
-    dmSent = await user.send({ embeds: [goodbyeEmbed] }).then(() => true).catch(() => false);
+    dmSent = await user.send(toComponentsV2({ embeds: [goodbyeEmbed] })).then(() => true).catch(() => false);
   }
 
   if (!dmSent && projectChannel?.isTextBased()) {
-    await projectChannel.send({ content: `<@${userId}>`, embeds: [goodbyeEmbed] }).catch(() => null);
+    await projectChannel.send(toComponentsV2({ content: `<@${userId}>`, embeds: [goodbyeEmbed] })).catch(() => null);
   }
 
   if (projectChannel?.deletable) {
@@ -3400,14 +3399,14 @@ async function handleHostingAccessCreateSubmit(interaction) {
 
   const ticket = getTicketByChannel(interaction.channelId);
   if (!ticket || !purchaseTypes(ticket.type)) {
-    await interaction.editReply('Este canal não está registrado como compra.');
+    await interaction.editReply(toComponentsV2('Este canal não está registrado como compra.'));
     return true;
   }
 
   const contract = getContract(interaction.channelId);
 
   if (ticket.ownerId !== interaction.user.id) {
-    await interaction.editReply('Apenas o cliente deste atendimento pode criar a chave de acesso.');
+    await interaction.editReply(toComponentsV2('Apenas o cliente deste atendimento pode criar a chave de acesso.'));
     return true;
   }
 
@@ -3416,12 +3415,12 @@ async function handleHostingAccessCreateSubmit(interaction) {
   const confirmPassword = interaction.fields.getTextInputValue('confirmPassword').trim();
 
   if (password.length < 4) {
-    await interaction.editReply('A senha precisa ter no mínimo 4 caracteres.');
+    await interaction.editReply(toComponentsV2('A senha precisa ter no mínimo 4 caracteres.'));
     return true;
   }
 
   if (password !== confirmPassword) {
-    await interaction.editReply('A confirmação da senha não confere.');
+    await interaction.editReply(toComponentsV2('A confirmação da senha não confere.'));
     return true;
   }
 
@@ -3499,9 +3498,9 @@ async function handleHostingAccessCreateSubmit(interaction) {
       .setTimestamp()
   );
 
-  await interaction.channel.send(buildPaymentStepPanel(contract, { projectName, accessKey })).catch(() => null);
+  await interaction.channel.send(toComponentsV2(buildPaymentStepPanel(contract, { projectName, accessKey }))).catch(() => null);
 
-  await interaction.editReply(`Chave criada com sucesso: \`${accessKey}\`. O cliente recebeu a orientação por DM.`);
+  await interaction.editReply(toComponentsV2(`Chave criada com sucesso: \`${accessKey}\`. O cliente recebeu a orientação por DM.`));
   return true;
 }
 
@@ -3510,7 +3509,7 @@ async function handleAccessUnlockButton(interaction) {
   const queueEntry = getQueueEntry(channelId);
 
   if (!queueEntry || queueEntry.ownerId !== interaction.user.id) {
-    await interaction.reply({ content: 'Não encontrei um acesso pendente para você.' });
+    await interaction.reply(toComponentsV2({ content: 'Não encontrei um acesso pendente para você.' }));
     return true;
   }
 
@@ -3541,7 +3540,7 @@ async function handleAccessUnlockSubmit(interaction) {
   const queueEntry = getQueueEntry(channelId);
 
   if (!queueEntry || queueEntry.ownerId !== interaction.user.id) {
-    await interaction.reply({ content: 'Não encontrei um acesso pendente para você.' });
+    await interaction.reply(toComponentsV2({ content: 'Não encontrei um acesso pendente para você.' }));
     return true;
   }
 
@@ -3549,7 +3548,7 @@ async function handleAccessUnlockSubmit(interaction) {
   const password = interaction.fields.getTextInputValue('password').trim();
 
   if (password.length < 4) {
-    await interaction.reply({ content: 'A senha precisa ter no mínimo 4 caracteres.' });
+    await interaction.reply(toComponentsV2({ content: 'A senha precisa ter no mínimo 4 caracteres.' }));
     return true;
   }
 
@@ -3557,18 +3556,18 @@ async function handleAccessUnlockSubmit(interaction) {
   const passwordCheck = verifyAccessPassword(password, queueEntry);
 
   if (!matchesKey || !passwordCheck.ok) {
-    await interaction.reply({ content: 'Chave ou senha incorreta. Verifique a DM com as instruções e tente novamente.' });
+    await interaction.reply(toComponentsV2({ content: 'Chave ou senha incorreta. Verifique a DM com as instruções e tente novamente.' }));
     return true;
   }
 
   if (passwordCheck.temporary) {
-    await interaction.reply({ content: 'Essa senha é temporária. Use o botão Mudar senha para definir uma nova senha antes de liberar o envio de mensagens.' });
+    await interaction.reply(toComponentsV2({ content: 'Essa senha é temporária. Use o botão Mudar senha para definir uma nova senha antes de liberar o envio de mensagens.' }));
     return true;
   }
 
   const guild = await interaction.client.guilds.fetch(queueEntry.guildId).catch(() => null);
   if (!guild) {
-    await interaction.reply({ content: 'Não consegui localizar o servidor deste acesso.' });
+    await interaction.reply(toComponentsV2({ content: 'Não consegui localizar o servidor deste acesso.' }));
     return true;
   }
 
@@ -3576,13 +3575,13 @@ async function handleAccessUnlockSubmit(interaction) {
   const projectChannelId = queueEntry.projectChannelId || channelId;
   const channel = await guild.channels.fetch(projectChannelId).catch(() => null);
   if (!setup || !channel?.isTextBased()) {
-    await interaction.reply({ content: 'Não consegui localizar o canal do projeto.' });
+    await interaction.reply(toComponentsV2({ content: 'Não consegui localizar o canal do projeto.' }));
     return true;
   }
 
   const member = await guild.members.fetch(interaction.user.id).catch(() => null);
   if (!member) {
-    await interaction.reply({ content: 'Não consegui localizar sua conta no servidor.' });
+    await interaction.reply(toComponentsV2({ content: 'Não consegui localizar sua conta no servidor.' }));
     return true;
   }
 
@@ -3609,7 +3608,7 @@ async function handleAccessUnlockSubmit(interaction) {
     accessSuspendedForPasswordReset: false
   });
 
-  await interaction.reply({ content: 'Acesso liberado com sucesso. Você já pode ver o canal do projeto.' });
+  await interaction.reply(toComponentsV2({ content: 'Acesso liberado com sucesso. Você já pode ver o canal do projeto.' }));
   await sendDmPanel(
     interaction.user,
     buildAccessUnlockedDm({
@@ -3619,8 +3618,8 @@ async function handleAccessUnlockSubmit(interaction) {
     })
   );
 
-  await channel.send(buildProjectDeadlinePanel({ ...queueEntry, channelId })).catch(() => null);
-  await channel.send({
+  await channel.send(toComponentsV2(buildProjectDeadlinePanel({ ...queueEntry, channelId }))).catch(() => null);
+  await channel.send(toComponentsV2({
     embeds: [
       new EmbedBuilder()
         .setColor(colors.default)
@@ -3628,7 +3627,7 @@ async function handleAccessUnlockSubmit(interaction) {
         .setDescription(`<@${interaction.user.id}> agora pode visualizar e enviar mensagens neste canal.`)
         .setTimestamp()
     ]
-  }).catch(() => null);
+  })).catch(() => null);
 
   return true;
 }
@@ -3699,7 +3698,7 @@ async function handleAccessRecoverButton(interaction) {
     tempPasswordExpiresAt: expiresAt.toISOString()
   });
 
-  const dmSent = await interaction.user.send({
+  const dmSent = await interaction.user.send(toComponentsV2({
     embeds: [
       new EmbedBuilder()
         .setColor(colors.gold)
@@ -3711,7 +3710,7 @@ async function handleAccessRecoverButton(interaction) {
         )
         .setTimestamp()
     ]
-  }).then(() => true).catch(() => false);
+  })).then(() => true).catch(() => false);
 
   await interaction.reply(privateReply(
     dmSent
@@ -3835,7 +3834,7 @@ async function handleProjectSupportButton(interaction) {
   const alertUserId = process.env.SUPPORT_ALERT_USER_ID || process.env.OWNER_USER_ID || interaction.guild?.ownerId;
   const alertUser = alertUserId ? await interaction.client.users.fetch(alertUserId).catch(() => null) : null;
   const dmSent = alertUser
-    ? await alertUser.send({
+    ? await alertUser.send(toComponentsV2({
       embeds: [
         new EmbedBuilder()
           .setColor(colors.orange)
@@ -3847,7 +3846,7 @@ async function handleProjectSupportButton(interaction) {
           )
           .setTimestamp()
       ]
-    }).then(() => true).catch(() => false)
+    })).then(() => true).catch(() => false)
     : false;
 
   await interaction.reply(privateReply(dmSent ? 'Suporte chamado. A equipe recebeu o aviso.' : 'Não consegui enviar o aviso por DM para o responsável.'));
@@ -3955,7 +3954,7 @@ async function handleContractEndSubmit(interaction) {
   const projectChannelCanBeDeleted = Boolean(projectChannel?.deletable);
   if (projectChannel?.isTextBased()) {
     await clearProjectFinalPanels(projectChannel);
-    await projectChannel.send({
+    await projectChannel.send(toComponentsV2({
       embeds: [
         new EmbedBuilder()
           .setColor(colors.red)
@@ -3969,16 +3968,16 @@ async function handleContractEndSubmit(interaction) {
             { name: 'Encerrado por', value: `<@${interaction.user.id}>`, inline: true },
             { name: 'Motivo', value: reason.slice(0, 1000) }
           )
-          .setTimestamp()
-      ]
-    }).catch(() => null);
+        .setTimestamp()
+    ]
+    })).catch(() => null);
 
     if (!projectChannelCanBeDeleted) {
-      await projectChannel.send(buildProjectSupportPanel({
+      await projectChannel.send(toComponentsV2(buildProjectSupportPanel({
         ...queueEntry,
         channelId: queueChannelId,
         productionStatusLabel: 'Contrato encerrado'
-      })).catch(() => null);
+      }))).catch(() => null);
     }
   }
 
@@ -4084,7 +4083,7 @@ async function handleProjectStatusButton(interaction) {
     );
   }
 
-  await interaction.reply({ content: `Status atualizado para **${label}**.` });
+  await interaction.reply(toComponentsV2({ content: `Status atualizado para **${label}**.` }));
   await deleteActionPanel(interaction);
 
   const updatedQueueEntry = getQueueEntry(queueChannelId) || {
@@ -4095,9 +4094,9 @@ async function handleProjectStatusButton(interaction) {
   if (projectChannel?.isTextBased()) {
     if (status === 'finished') {
       await clearProjectFinalPanels(projectChannel);
-      await projectChannel.send(buildProjectSupportPanel(updatedQueueEntry)).catch(() => null);
+      await projectChannel.send(toComponentsV2(buildProjectSupportPanel(updatedQueueEntry))).catch(() => null);
     } else {
-      await projectChannel.send(buildProjectStatusPanel(updatedQueueEntry)).catch(() => null);
+      await projectChannel.send(toComponentsV2(buildProjectStatusPanel(updatedQueueEntry))).catch(() => null);
     }
   }
   return true;
@@ -4147,7 +4146,7 @@ async function handleProjectDeadlineSubmit(interaction) {
 
   const channel = queueEntry.projectChannelId ? await interaction.guild.channels.fetch(queueEntry.projectChannelId).catch(() => null) : interaction.channel;
   if (channel?.isTextBased()) {
-    await channel.send({
+    await channel.send(toComponentsV2({
       embeds: [
         new EmbedBuilder()
           .setColor(colors.gold)
@@ -4158,14 +4157,14 @@ async function handleProjectDeadlineSubmit(interaction) {
           )
           .setTimestamp()
       ]
-    }).catch(() => null);
+    })).catch(() => null);
 
-    await channel.send(buildProjectStatusPanel({
+    await channel.send(toComponentsV2(buildProjectStatusPanel({
       ...queueEntry,
       channelId: queueChannelId,
       productionStatus: queueEntry.productionStatus || null,
       productionStatusLabel: queueEntry.productionStatusLabel || 'Aguardando início'
-    })).catch(() => null);
+    }))).catch(() => null);
   }
 
   const member = await interaction.guild.members.fetch(queueEntry.ownerId).catch(() => null);

@@ -1,8 +1,21 @@
 const { ActionRowBuilder, ButtonBuilder, ButtonStyle, EmbedBuilder } = require('discord.js');
 const { colors } = require('../config/setup');
+const { toComponentsV2 } = require('./componentsV2');
 
 async function sendDmPanel(user, embed, files = [], components = []) {
-  return user.send({ embeds: [embed], files, components }).then(() => true).catch(() => false);
+  const payload = embed?.embeds || embed?.components || embed?.content
+    ? { ...embed }
+    : { embeds: [embed] };
+
+  if (files.length) {
+    payload.files = files;
+  }
+
+  if (components.length) {
+    payload.components = [...(payload.components || []), ...components];
+  }
+
+  return user.send(toComponentsV2(payload)).then(() => true).catch(() => false);
 }
 
 function buildVerificationSuccessDm(guildName) {
@@ -29,7 +42,7 @@ function buildDashboardVerificationCodeDm({ guildName, code, expiresAt }) {
     .setTitle('Código de acesso da dashboard')
     .setDescription(
       `Recebemos uma solicitação de login na dashboard de **${guildName}**.\n\n` +
-        `Use o comando **/verificarsite** no servidor e informe o código abaixo para liberar seu acesso.`
+        'Digite o código abaixo na dashboard. Se precisar gerar outro código, use **/verificar site** no servidor.'
     )
     .addFields(
       { name: 'Código', value: `\`${code}\``, inline: true },

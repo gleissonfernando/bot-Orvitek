@@ -155,16 +155,55 @@ function normalizeDashboardCode(code) {
   return String(code || '').trim().replace(/\s+/g, '').toUpperCase();
 }
 
+function dashboardCodeAlreadyExists(data, _guildId, code) {
+  const normalizedCode = normalizeDashboardCode(code);
+  return Object.values(data.dashboardVerificationCodes)
+    .some((entry) => normalizeDashboardCode(entry.code) === normalizedCode);
+}
+
 function createRandomDashboardCode(data, guildId) {
-  for (let attempt = 0; attempt < 20; attempt += 1) {
-    const code = String(crypto.randomInt(100000, 1000000));
-    const existing = data.dashboardVerificationCodes[dashboardCodeKey(guildId, code)];
-    if (!existing || existing.status !== 'pending') {
-      return code;
+  const usedCodes = new Set(
+    Object.values(data.dashboardVerificationCodes)
+      .map((entry) => normalizeDashboardCode(entry.code))
+      .filter((code) => /^\d{4}$/.test(code))
+  );
+  const availableCount = 10000 - usedCodes.size;
+
+  if (availableCount <= 0) {
+    throw new Error('Todos os códigos de 4 dígitos já foram usados no sistema.');
+  }
+
+  let selectedIndex = crypto.randomInt(0, availableCount);
+
+  for (let value = 0; value < 10000; value += 1) {
+    const code = String(value).padStart(4, '0');
+    if (!usedCodes.has(code)) {
+      if (selectedIndex === 0) {
+        return code;
+      }
+
+      selectedIndex -= 1;
     }
   }
 
-  return String(Date.now()).slice(-6);
+  throw new Error('Não foi possível gerar um código único para a dashboard.');
+}
+
+function dashboardCodeIsAvailable(guildId, code) {
+  const normalizedCode = normalizeDashboardCode(code);
+  if (!/^\d{4}$/.test(normalizedCode)) {
+    return false;
+  }
+
+  return !dashboardCodeAlreadyExists(readDatabase(), guildId, normalizedCode);
+}
+
+function chooseDashboardCode(data, guildId, payloadCode) {
+  if (/^\d{4}$/.test(payloadCode) && !dashboardCodeAlreadyExists(data, guildId, payloadCode)) {
+    return payloadCode;
+  }
+
+  return createRandomDashboardCode(data, guildId);
 }
 
 function createDashboardVerificationCode(guildId, userId, payload = {}) {
@@ -173,7 +212,8 @@ function createDashboardVerificationCode(guildId, userId, payload = {}) {
   const ttlMs = Number(payload.ttlMs || 10 * 60 * 1000);
   const safeTtlMs = Number.isFinite(ttlMs) && ttlMs > 0 ? ttlMs : 10 * 60 * 1000;
   const expiresAt = payload.expiresAt || new Date(Date.now() + safeTtlMs).toISOString();
-  const code = normalizeDashboardCode(payload.code) || createRandomDashboardCode(data, guildId);
+  const payloadCode = normalizeDashboardCode(payload.code);
+  const code = chooseDashboardCode(data, guildId, payloadCode);
   const key = dashboardCodeKey(guildId, code);
 
   data.dashboardVerificationCodes[key] = {
@@ -643,6 +683,7 @@ module.exports = {
   createContract,
   createDashboardVerificationCode,
   createTicket,
+  dashboardCodeIsAvailable,
   deleteClient,
   expireClient,
   getClient,

@@ -3,6 +3,7 @@ const { createOrder, findProduct, listOrders, updateOrderStatus } = require('../
 const { money, shortDate } = require('../lib/format');
 const { requireAdmin } = require('../lib/permissions');
 const { privateReply } = require('../lib/replies');
+const { toComponentsV2 } = require('../lib/componentsV2');
 
 const statuses = ['pendente', 'pago', 'entregue', 'cancelado'];
 
@@ -22,7 +23,7 @@ async function sendSalesLog(client, order, title) {
     return;
   }
 
-  await channel.send({
+  await channel.send(toComponentsV2({
     embeds: [
       new EmbedBuilder()
         .setColor(0xf1c40f)
@@ -35,7 +36,7 @@ async function sendSalesLog(client, order, title) {
           { name: 'Status', value: order.status, inline: true }
         )
     ]
-  });
+  }));
 }
 
 module.exports = {

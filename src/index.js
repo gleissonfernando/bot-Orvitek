@@ -13,6 +13,7 @@ const {
 } = require('./lib/interactions');
 const { isOwnerRole } = require('./lib/permissions');
 const { privateReply } = require('./lib/replies');
+const { toComponentsV2 } = require('./lib/componentsV2');
 const { addWarning, expireClient, getGuildSetup, getHostingCycleKey, getHostingGraceDeadline, getReport, getSystemSettings, listClients } = require('./lib/store');
 const { buildWelcomeChannelEmbed, buildWelcomeDmEmbed } = require('./lib/welcome');
 const { registerDashboardReporter } = require('./services/dashboardReporter');
@@ -47,7 +48,7 @@ async function sendLog(guild, channelKey, embed) {
 
   const channel = await guild.channels.fetch(channelId).catch(() => null);
   if (channel?.isTextBased()) {
-    await channel.send({ embeds: [embed] }).catch(() => null);
+    await channel.send(toComponentsV2({ embeds: [embed] })).catch(() => null);
   }
 }
 
@@ -55,7 +56,7 @@ async function sendLifecycleLog(readyClient, title, description, color) {
   const channel = await readyClient.channels.fetch(LIFECYCLE_LOG_CHANNEL_ID).catch(() => null);
   if (!channel?.isTextBased()) return;
 
-  await channel.send({
+  await channel.send(toComponentsV2({
     embeds: [
       new EmbedBuilder()
         .setColor(color)
@@ -67,7 +68,7 @@ async function sendLifecycleLog(readyClient, title, description, color) {
         )
         .setTimestamp()
     ]
-  }).catch(() => null);
+  })).catch(() => null);
 }
 
 async function addInitialMemberRole(member) {
@@ -162,11 +163,11 @@ async function handleServerBoostStarted(member) {
     console.warn(`Nao foi possivel liberar canal VIP para ${member.user.tag}: ${error.message}`);
   });
 
-  await channel.send({
+  await channel.send(toComponentsV2({
     content: `${member}`,
     allowedMentions: { users: [member.id] },
     embeds: [buildBoostDiscountEmbed(member, settings)]
-  }).catch((error) => {
+  })).catch((error) => {
     console.warn(`Nao foi possivel enviar painel de boost para ${member.user.tag}: ${error.message}`);
   });
 }
@@ -206,15 +207,15 @@ client.on(Events.GuildMemberAdd, async (member) => {
   });
 
   await member
-    .send({
+    .send(toComponentsV2({
       embeds: [buildWelcomeDmEmbed(member, verifyChannelId)]
-    })
+    }))
     .catch((error) => console.warn(`Nao foi possivel enviar DM para ${member.user.tag}: ${error.message}`));
 
   if (announcementsId) {
     const channel = await member.guild.channels.fetch(announcementsId).catch(() => null);
     if (channel?.isTextBased()) {
-      await channel.send({ embeds: [buildWelcomeChannelEmbed(member, verifyChannelId)] });
+      await channel.send(toComponentsV2({ embeds: [buildWelcomeChannelEmbed(member, verifyChannelId)] }));
     }
   }
 });
@@ -269,7 +270,7 @@ client.on(Events.MessageCreate, async (message) => {
   const reason = hasBadWord ? 'palavra bloqueada' : 'spam';
   const record = addWarning(message.guild.id, message.author.id, reason);
 
-  await message.author.send(`Sua mensagem foi removida por ${reason}. Aviso ${record.strikes}/4.`).catch(() => null);
+  await message.author.send(toComponentsV2(`Sua mensagem foi removida por ${reason}. Aviso ${record.strikes}/4.`)).catch(() => null);
 
   const member = await message.guild.members.fetch(message.author.id).catch(() => null);
   if (member) {
@@ -379,14 +380,14 @@ async function checkExpirations(readyClient) {
 
       if (daysLeft === 7 && user) {
         await user
-          .send({
+          .send(toComponentsV2({
             embeds: [
               new EmbedBuilder()
                 .setColor(colors.orange)
                 .setTitle('⚠️ Seu plano vence em breve!')
                 .setDescription(`Olá ${user.username}! Seu plano expira em 7 dias. Renove agora para não perder o acesso.`)
             ]
-          })
+          }))
           .catch(() => null);
       }
 
@@ -452,7 +453,7 @@ async function sendWeeklyReports(readyClient) {
     if (!channel?.isTextBased()) continue;
 
     const report = getReport(guild.id);
-    await channel.send({
+    await channel.send(toComponentsV2({
       embeds: [
         new EmbedBuilder()
           .setColor(colors.default)
@@ -467,7 +468,7 @@ async function sendWeeklyReports(readyClient) {
               `⭐ Avaliação média: ${report.averageRating.toFixed(1)}/5`
           )
       ]
-    });
+    }));
   }
 }
 

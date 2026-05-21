@@ -1,17 +1,15 @@
 const { MessageFlags } = require('discord.js');
+const { toComponentsV2 } = require('./componentsV2');
 
 function privateReply(payload) {
   if (typeof payload === 'string') {
-    return {
-      content: payload,
-      flags: MessageFlags.Ephemeral
-    };
+    return toComponentsV2(payload, { ephemeral: true });
   }
 
-  return {
+  return toComponentsV2({
     ...payload,
     flags: MessageFlags.Ephemeral
-  };
+  }, { ephemeral: true });
 }
 
 module.exports = {

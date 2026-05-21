@@ -52,11 +52,12 @@ O `npm run payments` sobe o Express em `PORT` com:
 - `POST /webhook/pagbank`
 - `GET /pagamento/:id/status`
 - `GET /pagamentos`
+- `POST /api/auth/panel/issue`
 - `POST /dashboard/verificacao`
 - `GET /dashboard/acesso/:guildId/:userId`
 
 As rotas da dashboard exigem `BOT_DASHBOARD_TOKEN` no header `X-Dashboard-Token` ou `Authorization: Bearer <token>`.
-A dashboard cria/registra o código em `POST /dashboard/verificacao`; depois o usuário usa `/verificarsite codigo:<codigo>` no Discord e a dashboard consulta `GET /dashboard/acesso/:guildId/:userId`.
+Para o login no painel Orvitek, configure `DASHBOARD_URL` e `BOT_DASHBOARD_TOKEN`. O usuario usa `/verificar site` no Discord; o bot chama `POST ${DASHBOARD_URL}/api/auth/panel/issue` e responde com um codigo aleatorio de 4 digitos, sem repetir codigo ja registrado no sistema, para digitar na dashboard.
 
 ## Testar webhook com ngrok
 
@@ -93,7 +94,7 @@ Para obter o Discord User ID: Discord -> Configurações -> Avançado -> Ativar 
 - `/ativar`
 - `/clear`
 - `/painel-verificar`
-- `/verificarsite`
+- `/verificar site`
 - `/painel`
 
 ## Permissoes

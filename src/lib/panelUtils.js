@@ -1,3 +1,5 @@
+const { toComponentsV2 } = require('./componentsV2');
+
 const PANEL_TITLES = [
   'Contrato Online',
   'Painel de controle do sistema',
@@ -58,7 +60,7 @@ async function replacePanelMessage(channel, payload, options = {}) {
     await deleteMessages(removable);
   }
 
-  return channel.send(payload);
+  return channel.send(toComponentsV2(payload));
 }
 
 module.exports = {

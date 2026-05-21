@@ -4,8 +4,9 @@ const { colors, staffRoleKeys } = require('../config/setup');
 const { privateReply } = require('../lib/replies');
 const { isStaff } = require('../lib/permissions');
 const {
+  createDashboardVerificationCode,
+  dashboardCodeIsAvailable,
   expireClient,
-  consumeDashboardVerificationCode,
   getClient,
   getGuildSetup,
   getReport,
@@ -27,7 +28,9 @@ const { buildPromotionEmbed } = require('../lib/plans');
 const { buildNoticePayload, buildPlanSelectionPanelPayload } = require('../lib/planSelectionPanel');
 const { buildVerificationPanel } = require('../lib/verificationPanel');
 const { replacePanelMessage } = require('../lib/panelUtils');
-const { buildDashboardAccessResultDm, sendDmPanel } = require('../lib/dmPanels');
+const { toComponentsV2 } = require('../lib/componentsV2');
+
+const DASHBOARD_ISSUE_TIMEOUT_MS = 10000;
 
 function requireStaff(interaction) {
   if (isStaff(interaction.member)) {
@@ -139,7 +142,7 @@ async function activateClient(interaction) {
       reason: `Canal privado do projeto de ${user.tag}`
     });
 
-    await projectChannel.send({
+    await projectChannel.send(toComponentsV2({
       content: `<@${user.id}>`,
       embeds: [
         new EmbedBuilder()
@@ -153,7 +156,7 @@ async function activateClient(interaction) {
           )
           .setTimestamp()
       ]
-    });
+    }));
   }
 
   upsertClient(interaction.guild.id, user.id, {
@@ -233,9 +236,9 @@ async function sendWarning(interaction) {
 
   const user = interaction.options.getUser('user', true);
   const message = interaction.options.getString('mensagem', true);
-  await user.send({
+  await user.send(toComponentsV2({
     embeds: [new EmbedBuilder().setColor(colors.orange).setTitle('Aviso da equipe').setDescription(message)]
-  }).catch(() => null);
+  })).catch(() => null);
   await interaction.reply(privateReply(`Aviso enviado para ${user.tag}.`));
 }
 
@@ -252,9 +255,9 @@ async function announce(interaction) {
     return;
   }
 
-  await channel.send({
+  await channel.send(toComponentsV2({
     embeds: [new EmbedBuilder().setColor(colors.gold).setTitle('Anúncio Oficial').setDescription(message).setTimestamp()]
-  });
+  }));
   await interaction.reply(privateReply(`Anúncio enviado em ${channel}.`));
 }
 
@@ -273,7 +276,7 @@ async function closeTicket(interaction) {
   updateTicket(interaction.channelId, { status: 'closed', closedAt: new Date().toISOString() });
   const owner = await interaction.client.users.fetch(ticket.ownerId).catch(() => null);
   if (owner) await sendRatingRequest(owner, ticket.id);
-  await interaction.reply('Ticket fechado. Este canal será removido em 10 segundos.');
+  await interaction.reply(toComponentsV2('Ticket fechado. Este canal será removido em 10 segundos.'));
   setTimeout(() => interaction.channel.delete('Ticket fechado').catch(() => null), 10000);
 }
 
@@ -297,7 +300,7 @@ async function reportCommand(interaction) {
         `⭐ Avaliação média: ${report.averageRating.toFixed(1)}/5`
     );
 
-  await interaction.reply({ embeds: [embed] });
+  await interaction.reply(toComponentsV2({ embeds: [embed] }));
 }
 
 async function banCommand(interaction) {
@@ -347,22 +350,132 @@ async function verifySiteCommand(interaction) {
     return;
   }
 
-  const code = interaction.options.getString('codigo', true);
-  const result = consumeDashboardVerificationCode(interaction.guild.id, code, interaction.user.id, interaction.user.tag);
-  const dmSent = await sendDmPanel(
-    interaction.user,
-    buildDashboardAccessResultDm({
-      guildName: interaction.guild.name,
-      allowed: result.ok,
-      reason: result.reason
-    })
-  );
+  await interaction.deferReply({ flags: 64 });
 
-  await interaction.reply(privateReply(
+  const result = await issueDashboardPanelCode(interaction);
+
+  await interaction.editReply(toComponentsV2(
     result.ok
-      ? `Acesso da dashboard liberado. ${dmSent ? 'Também te avisei por DM.' : 'Não consegui enviar DM, mas o acesso foi liberado.'}`
-      : `Acesso não liberado: ${result.reason} ${dmSent ? 'Também te avisei por DM.' : 'Não consegui enviar DM com o resultado.'}`
+      ? `Seu codigo da Orvitek e: **${result.code}**. Digite esse codigo na dashboard.`
+      : result.message
   ));
+}
+
+function stripTrailingSlashes(value) {
+  return String(value || '').replace(/\/+$/, '');
+}
+
+function getDashboardIssueEndpoint() {
+  const baseUrl = stripTrailingSlashes(process.env.DASHBOARD_URL);
+  return baseUrl ? `${baseUrl}/api/auth/panel/issue` : null;
+}
+
+function buildDashboardIssueBody(interaction) {
+  return {
+    userId: interaction.user.id,
+    username: interaction.user.username,
+    globalName: interaction.user.globalName,
+    avatar: interaction.user.avatar,
+    guildId: interaction.guild.id,
+    guildName: interaction.guild.name,
+    memberPermissions: interaction.memberPermissions?.bitfield?.toString() || '0',
+    owner: interaction.guild.ownerId === interaction.user.id
+  };
+}
+
+function normalizeDashboardIssueCode(code) {
+  const normalized = String(code || '').trim();
+  return /^\d{4}$/.test(normalized) ? normalized : null;
+}
+
+async function readDashboardResponse(response) {
+  const text = await response.text();
+  if (!text) return null;
+
+  try {
+    return JSON.parse(text);
+  } catch {
+    return { message: text };
+  }
+}
+
+function dashboardErrorMessage(payload, response) {
+  if (payload && typeof payload === 'object') {
+    const message = payload.message || payload.error || payload.reason || payload.details;
+    if (typeof message === 'string' && message.trim()) {
+      return message.trim();
+    }
+  }
+
+  if (response) {
+    return `Erro ${response.status} ao solicitar o codigo na dashboard.`;
+  }
+
+  return 'Nao foi possivel solicitar o codigo na dashboard.';
+}
+
+async function issueDashboardPanelCode(interaction) {
+  const endpoint = getDashboardIssueEndpoint();
+  const token = String(process.env.BOT_DASHBOARD_TOKEN || '').trim();
+
+  if (!endpoint) {
+    return { ok: false, message: 'Configure DASHBOARD_URL no .env para usar este comando.' };
+  }
+
+  if (!token) {
+    return { ok: false, message: 'Configure BOT_DASHBOARD_TOKEN no .env para usar este comando.' };
+  }
+
+  if (typeof fetch !== 'function') {
+    return { ok: false, message: 'Fetch nativo indisponivel. Use Node.js 18 ou superior.' };
+  }
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), DASHBOARD_ISSUE_TIMEOUT_MS);
+
+  try {
+    const response = await fetch(endpoint, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Dashboard-Token': token
+      },
+      body: JSON.stringify(buildDashboardIssueBody(interaction)),
+      signal: controller.signal
+    });
+    const payload = await readDashboardResponse(response);
+
+    if (!response.ok || !payload?.ok) {
+      return { ok: false, message: dashboardErrorMessage(payload, response) };
+    }
+
+    const code = normalizeDashboardIssueCode(payload.code);
+    if (!code) {
+      return { ok: false, message: 'A dashboard nao retornou um codigo de 4 digitos.' };
+    }
+
+    if (!dashboardCodeIsAvailable(interaction.guild.id, code)) {
+      return { ok: false, message: 'A dashboard retornou um codigo repetido. Tente novamente.' };
+    }
+
+    createDashboardVerificationCode(interaction.guild.id, interaction.user.id, {
+      code,
+      userTag: interaction.user.tag,
+      source: 'dashboard_panel_issue',
+      createdBy: interaction.client?.user?.id || null,
+      expiresAt: payload.expiresAt || null
+    });
+
+    return { ok: true, code, expiresAt: payload.expiresAt || null };
+  } catch (error) {
+    if (error?.name === 'AbortError') {
+      return { ok: false, message: 'A dashboard demorou para responder. Tente novamente em instantes.' };
+    }
+
+    return { ok: false, message: `Nao foi possivel conectar na dashboard: ${error.message}` };
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 async function retailCommand(interaction) {
@@ -432,7 +545,7 @@ async function clearCommand(interaction) {
   }
 
   await restoreStaticPanel(targetChannel.guild, targetChannel.id, { skipAuthorCheck: true });
-  await interaction.editReply(`Canal limpo: ${targetChannel}.`);
+  await interaction.editReply(toComponentsV2(`Canal limpo: ${targetChannel}.`));
 }
 
 async function salesPanelCommand(interaction) {
@@ -483,12 +596,12 @@ async function verificationPanelCommand(interaction) {
   const targetChannel = selectedChannel || interaction.channel;
 
   if (!targetChannel?.isTextBased()) {
-    await interaction.editReply('Use este comando em um canal de texto ou selecione um canal de texto.');
+    await interaction.editReply(toComponentsV2('Use este comando em um canal de texto ou selecione um canal de texto.'));
     return;
   }
 
   if (setup?.channels?.verify && selectedChannel && selectedChannel.id !== setup.channels.verify) {
-    await interaction.editReply('Painel enviado no canal selecionado. Observação: ele é diferente do canal de verificação salvo no setup.');
+    await interaction.editReply(toComponentsV2('Painel enviado no canal selecionado. Observação: ele é diferente do canal de verificação salvo no setup.'));
     suppressPanelRestore(targetChannel.id, 15000);
     await replacePanelMessage(targetChannel, buildVerificationPanel(), { deleteAll: true });
     return;
@@ -496,7 +609,7 @@ async function verificationPanelCommand(interaction) {
 
   suppressPanelRestore(targetChannel.id, 15000);
   await replacePanelMessage(targetChannel, buildVerificationPanel(), { deleteAll: true });
-  await interaction.editReply(`Painel de verificação enviado em ${targetChannel}.`);
+  await interaction.editReply(toComponentsV2(`Painel de verificação enviado em ${targetChannel}.`));
 }
 
 const commands = [
@@ -521,10 +634,12 @@ const commands = [
   },
   {
     data: new SlashCommandBuilder()
-      .setName('verificarsite')
-      .setDescription('Valida o código recebido para liberar seu acesso na dashboard.')
-      .addStringOption((option) =>
-        option.setName('codigo').setDescription('Código enviado pela dashboard ou pela equipe.').setRequired(true)
+      .setName('verificar')
+      .setDescription('Verifica seu acesso aos serviços da Orvitek.')
+      .addSubcommand((subcommand) =>
+        subcommand
+          .setName('site')
+          .setDescription('Gera seu codigo para entrar na dashboard Orvitek.')
       ),
     allowNonOwner: true,
     execute: verifySiteCommand

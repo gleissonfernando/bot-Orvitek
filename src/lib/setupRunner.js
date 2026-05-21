@@ -14,6 +14,7 @@ const { buildHowItWorksEmbeds } = require('./howItWorks');
 const { buildPlanSelectionPanelPayload } = require('./planSelectionPanel');
 const { replacePanelMessage } = require('./panelUtils');
 const { buildRenewPanelPayload, buildSuggestionsPanelPayload, buildTicketPanelPayload } = require('./staticPanels');
+const { toComponentsV2 } = require('./componentsV2');
 
 function rolePermissions(roleIds, roleKeys, allowSend = true) {
   return roleKeys
@@ -236,17 +237,17 @@ async function runSetup(interaction) {
 
   const logs = channelMap.generalLogs;
   if (logs?.isTextBased()) {
-    await logs.send({ embeds: [finalEmbed] });
+    await logs.send(toComponentsV2({ embeds: [finalEmbed] }));
   }
 
-  await interaction.editReply({
+  await interaction.editReply(toComponentsV2({
     embeds: [
       finalEmbed.setDescription(
         setup ? 'Configuração salva e painéis publicados. Nenhum canal ou cargo existente foi apagado.' : 'Configuração concluída.'
       )
     ],
     components: []
-  });
+  }));
 
   return report;
 }

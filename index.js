@@ -60,6 +60,29 @@ app.get('/health', (_req, res) => {
   res.json({ ok: true });
 });
 
+app.post('/api/auth/panel/issue', requireDashboardToken, (req, res) => {
+  const { userId, username, globalName, guildId } = req.body || {};
+  if (!userId || !guildId) {
+    res.status(400).json({ ok: false, message: 'userId e guildId sao obrigatorios.' });
+    return;
+  }
+
+  try {
+    const record = createDashboardVerificationCode(String(guildId), String(userId), {
+      userTag: username || globalName || null,
+      source: 'dashboard_panel_issue'
+    });
+
+    res.status(201).json({
+      ok: true,
+      code: record.code,
+      expiresAt: record.expiresAt
+    });
+  } catch (error) {
+    res.status(409).json({ ok: false, message: error.message });
+  }
+});
+
 app.post('/dashboard/verificacao', requireDashboardToken, (req, res) => {
   const { guildId, userId, userTag, code, expiresInMinutes } = req.body || {};
   if (!guildId || !userId) {
@@ -74,12 +97,18 @@ app.post('/dashboard/verificacao', requireDashboardToken, (req, res) => {
   }
 
   const ttlMs = ttlMinutes * 60 * 1000;
-  const record = createDashboardVerificationCode(String(guildId), String(userId), {
-    userTag: userTag || null,
-    code,
-    ttlMs,
-    source: 'dashboard'
-  });
+  let record;
+  try {
+    record = createDashboardVerificationCode(String(guildId), String(userId), {
+      userTag: userTag || null,
+      code,
+      ttlMs,
+      source: 'dashboard'
+    });
+  } catch (error) {
+    res.status(409).json({ ok: false, message: error.message });
+    return;
+  }
 
   res.status(201).json({
     ok: true,

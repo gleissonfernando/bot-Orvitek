@@ -1,5 +1,6 @@
 const nodemailer = require('nodemailer');
 const { Client, EmbedBuilder, GatewayIntentBits } = require('discord.js');
+const { toComponentsV2 } = require('./src/lib/componentsV2');
 
 let discordClient = null;
 let discordLoginPromise = null;
@@ -83,7 +84,7 @@ async function enviarDmDiscord(destino, pedido) {
   const client = await getDiscordClient();
   const user = await client.users.fetch(destino);
 
-  await user.send({
+  await user.send(toComponentsV2({
     embeds: [
       new EmbedBuilder()
         .setColor(0x16a34a)
@@ -99,7 +100,7 @@ async function enviarDmDiscord(destino, pedido) {
         .setFooter({ text: 'Orvitek' })
         .setTimestamp()
     ]
-  });
+  }));
 }
 
 async function enviarComprovante({ canal, destino, pedido }) {
