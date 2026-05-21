@@ -1,9 +1,19 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
+const { MongoClient } = require('mongodb');
 
 const dataDir = path.join(process.cwd(), 'data');
 const dbPath = path.join(dataDir, 'database.json');
+const mongoUri = process.env.MONGODB_URI || process.env.MONGO_URI || '';
+const mongoDbName = process.env.MONGODB_DB_NAME || 'orvitek';
+const mongoStoreCollection = process.env.MONGODB_STORE_COLLECTION || 'bot_store';
+const mongoStoreDocumentId = process.env.MONGODB_STORE_DOCUMENT_ID || 'default';
+
+let memoryData = null;
+let mongoClientPromise = null;
+let mongoCollectionPromise = null;
+let mongoWritePromise = Promise.resolve();
 
 const initialData = {
   setup: {
@@ -55,6 +65,53 @@ function mergeDefaults(data) {
   };
 }
 
+function useMongoStore() {
+  return Boolean(mongoUri);
+}
+
+function getMongoClient() {
+  if (!mongoClientPromise) {
+    const client = new MongoClient(mongoUri, {
+      serverSelectionTimeoutMS: Number(process.env.MONGODB_SERVER_SELECTION_TIMEOUT_MS || 10000)
+    });
+
+    mongoClientPromise = client.connect();
+  }
+
+  return mongoClientPromise;
+}
+
+async function getMongoCollection() {
+  if (!mongoCollectionPromise) {
+    mongoCollectionPromise = getMongoClient().then((client) => client.db(mongoDbName).collection(mongoStoreCollection));
+  }
+
+  return mongoCollectionPromise;
+}
+
+async function initializeStore() {
+  if (!useMongoStore()) {
+    ensureDatabase();
+    memoryData = mergeDefaults(JSON.parse(fs.readFileSync(dbPath, 'utf8')));
+    return memoryData;
+  }
+
+  const collection = await getMongoCollection();
+  const document = await collection.findOne({ _id: mongoStoreDocumentId });
+  memoryData = mergeDefaults(document?.data || {});
+  console.log(`[MongoDB] Conectado ao banco "${mongoDbName}" na coleção "${mongoStoreCollection}".`);
+
+  if (!document) {
+    await collection.replaceOne(
+      { _id: mongoStoreDocumentId },
+      { _id: mongoStoreDocumentId, data: memoryData, updatedAt: nowIso() },
+      { upsert: true }
+    );
+  }
+
+  return memoryData;
+}
+
 function ensureDatabase() {
   if (!fs.existsSync(dataDir)) {
     fs.mkdirSync(dataDir, { recursive: true });
@@ -66,13 +123,36 @@ function ensureDatabase() {
 }
 
 function readDatabase() {
+  if (memoryData) {
+    return mergeDefaults(memoryData);
+  }
+
   ensureDatabase();
-  return mergeDefaults(JSON.parse(fs.readFileSync(dbPath, 'utf8')));
+  memoryData = mergeDefaults(JSON.parse(fs.readFileSync(dbPath, 'utf8')));
+  return memoryData;
 }
 
 function writeDatabase(data) {
+  memoryData = mergeDefaults(data);
+
+  if (useMongoStore()) {
+    mongoWritePromise = mongoWritePromise
+      .then(async () => {
+        const collection = await getMongoCollection();
+        await collection.replaceOne(
+          { _id: mongoStoreDocumentId },
+          { _id: mongoStoreDocumentId, data: memoryData, updatedAt: nowIso() },
+          { upsert: true }
+        );
+      })
+      .catch((error) => {
+        console.error(`Nao foi possivel salvar dados no MongoDB: ${error.message}`);
+      });
+    return;
+  }
+
   ensureDatabase();
-  fs.writeFileSync(dbPath, JSON.stringify(mergeDefaults(data), null, 2));
+  fs.writeFileSync(dbPath, JSON.stringify(memoryData, null, 2));
 }
 
 function nowIso() {
@@ -699,6 +779,7 @@ module.exports = {
   getRetailPromotion,
   getSystemSettings,
   getTicketByChannel,
+  initializeStore,
   listClients,
   listDashboardAccess,
   listDashboardVerificationCodes,

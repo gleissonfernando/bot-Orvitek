@@ -55,7 +55,7 @@ async function processarWebhookPagBank(req) {
   const novoStatus = statusInterno(statusPagBank);
   const id = payload.id;
   const referenceId = payload.reference_id;
-  const pedido = buscarPedido(id) || buscarPedido(referenceId);
+  const pedido = (await buscarPedido(id)) || (await buscarPedido(referenceId));
 
   console.log(`${emojiStatus(statusPagBank)} Webhook PagBank`, {
     id,
@@ -68,7 +68,7 @@ async function processarWebhookPagBank(req) {
     return { ok: true, notFound: true };
   }
 
-  let atualizado = atualizarPedido(pedido.id, {
+  let atualizado = await atualizarPedido(pedido.id, {
     status: novoStatus,
     pagbank_status: statusPagBank,
     pago_em: statusPagBank === 'PAID' ? pagoEm(payload) || new Date().toISOString() : pedido.pago_em,
@@ -84,7 +84,7 @@ async function processarWebhookPagBank(req) {
     });
 
     if (enviado) {
-      atualizado = atualizarPedido(atualizado.id, { comprovante_enviado: 1 });
+      atualizado = await atualizarPedido(atualizado.id, { comprovante_enviado: 1 });
     }
   }
 

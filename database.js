@@ -1,89 +1,59 @@
-const fs = require('node:fs');
-const path = require('node:path');
-const Database = require('better-sqlite3');
+const { MongoClient } = require('mongodb');
 
-const dataDir = path.join(process.cwd(), 'data');
-const dbPath = path.join(dataDir, 'pagamentos.sqlite');
+const uri = process.env.MONGODB_URI || process.env.MONGO_URI || '';
+const dbName = process.env.MONGODB_DB_NAME || 'orvitek';
+const collectionName = process.env.MONGODB_ORDERS_COLLECTION || 'pedidos';
 
-if (!fs.existsSync(dataDir)) {
-  fs.mkdirSync(dataDir, { recursive: true });
-}
-
-const db = new Database(dbPath);
-
-db.pragma('journal_mode = WAL');
-
-db.exec(`
-CREATE TABLE IF NOT EXISTS pedidos (
-  id TEXT PRIMARY KEY,
-  reference_id TEXT NOT NULL UNIQUE,
-  status TEXT NOT NULL,
-  valor INTEGER NOT NULL,
-  descricao TEXT NOT NULL,
-  qr_code_texto TEXT,
-  qr_code_imagem TEXT,
-  criado_em TEXT NOT NULL,
-  pago_em TEXT,
-  comprovante_canal TEXT,
-  comprovante_destino TEXT,
-  comprovante_enviado INTEGER NOT NULL DEFAULT 0,
-  cliente_nome TEXT,
-  cliente_email TEXT,
-  cliente_tax_id TEXT,
-  end_to_end_id TEXT,
-  pagbank_status TEXT,
-  atualizado_em TEXT
-);
-`);
+let clientPromise = null;
+let collectionPromise = null;
 
 function nowIso() {
   return new Date().toISOString();
 }
 
-function salvarPedido(pedido) {
-  const stmt = db.prepare(`
-    INSERT INTO pedidos (
-      id,
-      reference_id,
-      status,
-      valor,
-      descricao,
-      qr_code_texto,
-      qr_code_imagem,
-      criado_em,
-      pago_em,
-      comprovante_canal,
-      comprovante_destino,
-      comprovante_enviado,
-      cliente_nome,
-      cliente_email,
-      cliente_tax_id,
-      end_to_end_id,
-      pagbank_status,
-      atualizado_em
-    ) VALUES (
-      @id,
-      @reference_id,
-      @status,
-      @valor,
-      @descricao,
-      @qr_code_texto,
-      @qr_code_imagem,
-      @criado_em,
-      @pago_em,
-      @comprovante_canal,
-      @comprovante_destino,
-      @comprovante_enviado,
-      @cliente_nome,
-      @cliente_email,
-      @cliente_tax_id,
-      @end_to_end_id,
-      @pagbank_status,
-      @atualizado_em
-    )
-  `);
+function requireMongoUri() {
+  if (!uri) {
+    throw new Error('Configure MONGODB_URI no .env para usar o MongoDB.');
+  }
+}
 
-  const payload = {
+function getClient() {
+  requireMongoUri();
+
+  if (!clientPromise) {
+    const client = new MongoClient(uri, {
+      serverSelectionTimeoutMS: Number(process.env.MONGODB_SERVER_SELECTION_TIMEOUT_MS || 10000)
+    });
+
+    clientPromise = client.connect();
+  }
+
+  return clientPromise;
+}
+
+async function getCollection() {
+  if (!collectionPromise) {
+    collectionPromise = getClient().then(async (client) => {
+      const collection = client.db(dbName).collection(collectionName);
+      await collection.createIndex({ id: 1 }, { unique: true });
+      await collection.createIndex({ reference_id: 1 }, { unique: true });
+      await collection.createIndex({ criado_em: -1 });
+      console.log(`[MongoDB] Pedidos conectados no banco "${dbName}" na coleção "${collectionName}".`);
+      return collection;
+    });
+  }
+
+  return collectionPromise;
+}
+
+function normalizePedido(pedido) {
+  if (!pedido) return null;
+  const { _id, ...payload } = pedido;
+  return payload;
+}
+
+function buildPedido(pedido) {
+  return {
     id: pedido.id,
     reference_id: pedido.reference_id,
     status: pedido.status || 'AGUARDANDO',
@@ -103,29 +73,44 @@ function salvarPedido(pedido) {
     pagbank_status: pedido.pagbank_status || null,
     atualizado_em: nowIso()
   };
+}
 
-  stmt.run(payload);
+async function salvarPedido(pedido) {
+  const collection = await getCollection();
+  const payload = buildPedido(pedido);
+
+  await collection.insertOne(payload);
   return buscarPedidoPorId(payload.id);
 }
 
-function buscarPedidoPorId(id) {
-  return db.prepare('SELECT * FROM pedidos WHERE id = ?').get(id) || null;
+async function buscarPedidoPorId(id) {
+  const collection = await getCollection();
+  return normalizePedido(await collection.findOne({ id }));
 }
 
-function buscarPedidoPorReferencia(referenceId) {
-  return db.prepare('SELECT * FROM pedidos WHERE reference_id = ?').get(referenceId) || null;
+async function buscarPedidoPorReferencia(referenceId) {
+  const collection = await getCollection();
+  return normalizePedido(await collection.findOne({ reference_id: referenceId }));
 }
 
-function buscarPedido(idOrReferenceId) {
-  return buscarPedidoPorId(idOrReferenceId) || buscarPedidoPorReferencia(idOrReferenceId);
+async function buscarPedido(idOrReferenceId) {
+  const collection = await getCollection();
+  return normalizePedido(await collection.findOne({
+    $or: [
+      { id: idOrReferenceId },
+      { reference_id: idOrReferenceId }
+    ]
+  }));
 }
 
-function listarPedidos() {
-  return db.prepare('SELECT * FROM pedidos ORDER BY criado_em DESC').all();
+async function listarPedidos() {
+  const collection = await getCollection();
+  const pedidos = await collection.find({}).sort({ criado_em: -1 }).toArray();
+  return pedidos.map(normalizePedido);
 }
 
-function atualizarPedido(idOrReferenceId, campos) {
-  const atual = buscarPedido(idOrReferenceId);
+async function atualizarPedido(idOrReferenceId, campos) {
+  const atual = await buscarPedido(idOrReferenceId);
   if (!atual) return null;
 
   const permitido = [
@@ -140,18 +125,15 @@ function atualizarPedido(idOrReferenceId, campos) {
   const entries = Object.entries(campos).filter(([key]) => permitido.includes(key));
   if (!entries.length) return atual;
 
-  const updates = entries.map(([key]) => `${key} = @${key}`);
-  updates.push('atualizado_em = @atualizado_em');
-
-  const params = {
-    id: atual.id,
+  const update = {
     atualizado_em: nowIso()
   };
   for (const [key, value] of entries) {
-    params[key] = key === 'comprovante_enviado' ? (value ? 1 : 0) : value;
+    update[key] = key === 'comprovante_enviado' ? (value ? 1 : 0) : value;
   }
 
-  db.prepare(`UPDATE pedidos SET ${updates.join(', ')} WHERE id = @id`).run(params);
+  const collection = await getCollection();
+  await collection.updateOne({ id: atual.id }, { $set: update });
   return buscarPedidoPorId(atual.id);
 }
 

@@ -4,7 +4,7 @@ const express = require('express');
 const { buscarPedido, listarPedidos, salvarPedido } = require('./database');
 const { criarPedidoPix } = require('./pagbank');
 const { processarWebhookPagBank } = require('./webhook');
-const { createDashboardVerificationCode, getDashboardAccess } = require('./src/lib/store');
+const { createDashboardVerificationCode, getDashboardAccess, initializeStore } = require('./src/lib/store');
 
 const app = express();
 const port = Number(process.env.PORT || 3000);
@@ -112,7 +112,7 @@ app.post('/pagamento/criar', async (req, res) => {
     const comprovanteConfig = validarComprovante(comprovante);
     const resultado = await criarPedidoPix({ valor, descricao, cliente });
 
-    const pedido = salvarPedido({
+    const pedido = await salvarPedido({
       id: resultado.id,
       reference_id: resultado.reference_id,
       status: 'AGUARDANDO',
@@ -154,27 +154,42 @@ app.post('/webhook/pagbank', async (req, res) => {
   res.sendStatus(200);
 });
 
-app.get('/pagamento/:id/status', (req, res) => {
-  const pedido = buscarPedido(req.params.id);
-  if (!pedido) {
-    res.status(404).json({ erro: 'Pedido não encontrado.' });
-    return;
+app.get('/pagamento/:id/status', async (req, res) => {
+  try {
+    const pedido = await buscarPedido(req.params.id);
+    if (!pedido) {
+      res.status(404).json({ erro: 'Pedido não encontrado.' });
+      return;
+    }
+
+    res.json({
+      id: pedido.id,
+      reference_id: pedido.reference_id,
+      status: pedido.status,
+      pagbank_status: pedido.pagbank_status,
+      pago_em: pedido.pago_em,
+      comprovante_enviado: Boolean(pedido.comprovante_enviado)
+    });
+  } catch (error) {
+    res.status(500).json({ erro: 'Não foi possível consultar o pagamento.', detalhe: error.message });
   }
+});
 
-  res.json({
-    id: pedido.id,
-    reference_id: pedido.reference_id,
-    status: pedido.status,
-    pagbank_status: pedido.pagbank_status,
-    pago_em: pedido.pago_em,
-    comprovante_enviado: Boolean(pedido.comprovante_enviado)
+app.get('/pagamentos', async (_req, res) => {
+  try {
+    res.json(await listarPedidos());
+  } catch (error) {
+    res.status(500).json({ erro: 'Não foi possível listar os pagamentos.', detalhe: error.message });
+  }
+});
+
+initializeStore()
+  .then(() => {
+    app.listen(port, () => {
+      console.log(`Servidor de pagamentos rodando em http://localhost:${port}`);
+    });
+  })
+  .catch((error) => {
+    console.error(`Nao foi possivel inicializar o banco de dados: ${error.message}`);
+    process.exit(1);
   });
-});
-
-app.get('/pagamentos', (_req, res) => {
-  res.json(listarPedidos());
-});
-
-app.listen(port, () => {
-  console.log(`Servidor de pagamentos rodando em http://localhost:${port}`);
-});

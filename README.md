@@ -22,9 +22,13 @@ Copie `.env.example` para `.env` e preencha:
 DISCORD_TOKEN=token_do_bot
 CLIENT_ID=id_da_aplicacao
 GUILD_ID=id_do_servidor
+MONGODB_URI=sua_uri_mongodb
+MONGODB_DB_NAME=orvitek
 PAGBANK_ENV=sandbox
 PAGBANK_TOKEN=token_pagbank
 ```
+
+Os pedidos e pagamentos ficam salvos no MongoDB, na coleção `pedidos` por padrão. Os demais dados do bot usam a coleção `bot_store`. Para trocar os nomes, ajuste `MONGODB_DB_NAME`, `MONGODB_ORDERS_COLLECTION` e `MONGODB_STORE_COLLECTION`.
 
 Para usar pagamento real, configure `PAGBANK_ENV=production` e use o token de produção da conta PagBank. O bot gera o Pix após o contrato e a chave de acesso, e o cliente usa o botão **Verificar PagBank** para confirmar o pagamento.
 

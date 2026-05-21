@@ -14,7 +14,7 @@ const {
 const { isOwnerRole } = require('./lib/permissions');
 const { privateReply } = require('./lib/replies');
 const { toComponentsV2 } = require('./lib/componentsV2');
-const { addWarning, expireClient, getGuildSetup, getHostingCycleKey, getHostingGraceDeadline, getReport, getSystemSettings, listClients } = require('./lib/store');
+const { addWarning, expireClient, getGuildSetup, getHostingCycleKey, getHostingGraceDeadline, getReport, getSystemSettings, initializeStore, listClients } = require('./lib/store');
 const { buildWelcomeChannelEmbed, buildWelcomeDmEmbed } = require('./lib/welcome');
 const { registerDashboardReporter } = require('./services/dashboardReporter');
 
@@ -472,4 +472,9 @@ async function sendWeeklyReports(readyClient) {
   }
 }
 
-client.login(process.env.DISCORD_TOKEN);
+initializeStore()
+  .then(() => client.login(process.env.DISCORD_TOKEN))
+  .catch((error) => {
+    console.error(`Nao foi possivel inicializar o banco de dados: ${error.message}`);
+    process.exit(1);
+  });
