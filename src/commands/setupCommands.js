@@ -4,8 +4,6 @@ const { colors, staffRoleKeys } = require('../config/setup');
 const { privateReply } = require('../lib/replies');
 const { isStaff } = require('../lib/permissions');
 const {
-  createDashboardVerificationCode,
-  dashboardCodeIsAvailable,
   expireClient,
   getClient,
   getGuildSetup,
@@ -356,7 +354,7 @@ async function verifySiteCommand(interaction) {
 
   await interaction.editReply(toComponentsV2(
     result.ok
-      ? `Seu codigo da Orvitek e: **${result.code}**. Digite esse codigo na dashboard.`
+      ? `Seu codigo da Orvitek e: **${result.code}**\nDigite esse codigo na dashboard.`
       : result.message
   ));
 }
@@ -378,7 +376,7 @@ function buildDashboardIssueBody(interaction) {
     avatar: interaction.user.avatar,
     guildId: interaction.guild.id,
     guildName: interaction.guild.name,
-    memberPermissions: interaction.memberPermissions?.bitfield?.toString() || '0',
+    memberPermissions: interaction.memberPermissions.bitfield.toString(),
     owner: interaction.guild.ownerId === interaction.user.id
   };
 }
@@ -453,18 +451,6 @@ async function issueDashboardPanelCode(interaction) {
     if (!code) {
       return { ok: false, message: 'A dashboard nao retornou um codigo de 4 digitos.' };
     }
-
-    if (!dashboardCodeIsAvailable(interaction.guild.id, code)) {
-      return { ok: false, message: 'A dashboard retornou um codigo repetido. Tente novamente.' };
-    }
-
-    createDashboardVerificationCode(interaction.guild.id, interaction.user.id, {
-      code,
-      userTag: interaction.user.tag,
-      source: 'dashboard_panel_issue',
-      createdBy: interaction.client?.user?.id || null,
-      expiresAt: payload.expiresAt || null
-    });
 
     return { ok: true, code, expiresAt: payload.expiresAt || null };
   } catch (error) {
