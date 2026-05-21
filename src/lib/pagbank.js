@@ -8,7 +8,7 @@ const PRODUCTION_URL = 'https://api.pagseguro.com';
 function getPagBankConfig() {
   const token = process.env.PAGBANK_TOKEN || process.env.PAGSEGURO_TOKEN || '';
   const environment = String(process.env.PAGBANK_ENV || 'sandbox').toLowerCase();
-  const baseUrl = process.env.PAGBANK_API_URL || (environment === 'production' ? PRODUCTION_URL : SANDBOX_URL);
+  const baseUrl = process.env.PAGBANK_API_URL || process.env.PAGBANK_URL || (environment === 'production' ? PRODUCTION_URL : SANDBOX_URL);
   const notificationUrl = process.env.PAGBANK_NOTIFICATION_URL || '';
   const expirationMinutes = Number(process.env.PAGBANK_QR_EXPIRATION_MINUTES || 1440);
 
@@ -210,17 +210,36 @@ function buildCustomer(contract, discordUser) {
 }
 
 function getQrCode(order) {
-  const qrCodes = order.qr_codes || order.qr_code || [];
-  return Array.isArray(qrCodes) ? qrCodes[0] || null : null;
+  const qrCodes = order?.qr_codes || order?.qr_code || [];
+  if (Array.isArray(qrCodes)) return qrCodes[0] || null;
+  return qrCodes && typeof qrCodes === 'object' ? qrCodes : null;
 }
 
 function findQrLink(qrCode, media) {
-  return (qrCode?.links || []).find((link) => link.media === media || link.rel?.includes(media === 'image/png' ? 'PNG' : 'BASE64'))?.href || null;
+  const expectedRel = media === 'image/png' ? 'PNG' : 'BASE64';
+  return (qrCode?.links || []).find((link) => (
+    String(link.media || '').toLowerCase() === media ||
+    String(link.rel || '').toUpperCase().includes(expectedRel)
+  ))?.href || null;
 }
 
-function buildPixPaymentFromOrder(order, amountCents, referenceId) {
+function buildQrCodeImageUrl(qrCodeText) {
+  const text = String(qrCodeText || '').trim();
+  if (!text) return null;
+  return `https://api.qrserver.com/v1/create-qr-code/?size=280x280&data=${encodeURIComponent(text)}`;
+}
+
+function isPixCopyPasteText(value) {
+  const text = String(value || '').trim();
+  return /^000201/.test(text) && /6304[0-9A-F]{4}$/i.test(text) && text.length >= 80;
+}
+
+async function buildPixPaymentFromOrder(order, amountCents, referenceId) {
   const qrCode = getQrCode(order);
   const charge = Array.isArray(order.charges) ? order.charges[0] || null : null;
+  const qrCodeTextLink = findQrLink(qrCode, 'text/plain');
+  const qrCodeText = isPixCopyPasteText(qrCode?.text) ? String(qrCode.text).trim() : null;
+  const qrCodePng = buildQrCodeImageUrl(qrCodeText) || findQrLink(qrCode, 'image/png');
 
   return {
     provider: 'pagbank',
@@ -228,9 +247,9 @@ function buildPixPaymentFromOrder(order, amountCents, referenceId) {
     orderId: order.id || null,
     chargeId: charge?.id || null,
     qrCodeId: qrCode?.id || null,
-    qrCodeText: qrCode?.text || null,
-    qrCodePng: findQrLink(qrCode, 'image/png'),
-    qrCodeBase64: findQrLink(qrCode, 'text/plain'),
+    qrCodeText,
+    qrCodePng,
+    qrCodeBase64: qrCodeTextLink,
     amountCents,
     status: isOrderPaid(order, amountCents) ? 'paid' : 'awaiting_payment',
     rawStatus: charge?.status || null,
@@ -274,7 +293,7 @@ async function createPixOrder({ contract, discordUser, amount, description, refe
 
   return {
     order,
-    payment: buildPixPaymentFromOrder(order, amountCents, referenceId)
+    payment: await buildPixPaymentFromOrder(order, amountCents, referenceId)
   };
 }
 
@@ -321,11 +340,33 @@ function verifyWebhookSignature(rawBody, receivedSignature) {
   }
 }
 
+function isBuyerMerchantEmailError(message) {
+  return String(message || '').toLowerCase().includes('buyer email must not be equals to merchant email');
+}
+
+function isInvalidCredentialError(message) {
+  const text = String(message || '').toLowerCase();
+  return text.includes('invalid credential') || text.includes('review authorization');
+}
+
 function formatPagBankError(data, statusCode = null) {
   const prefix = statusCode ? `PagBank HTTP ${statusCode}` : 'PagBank';
   if (!data) return `${prefix}: resposta vazia.`;
   if (data.error_messages?.length) {
-    return `${prefix}: ${data.error_messages.map((item) => item.description || item.message || item.code).filter(Boolean).join('; ')}`;
+    const messages = data.error_messages.map((item) => item.description || item.message || item.code).filter(Boolean);
+    if (messages.some(isBuyerMerchantEmailError)) {
+      return `${prefix}: o e-mail do comprador não pode ser igual ao e-mail da conta vendedora do PagBank. Corrija o e-mail no contrato e tente novamente.`;
+    }
+    if (messages.some(isInvalidCredentialError)) {
+      return `${prefix}: credencial PagBank inválida. Use um PAGBANK_TOKEN de produção quando PAGBANK_ENV=production ou volte a URL/ambiente para sandbox com token sandbox.`;
+    }
+    return `${prefix}: ${messages.join('; ')}`;
+  }
+  if (isBuyerMerchantEmailError(data.message)) {
+    return `${prefix}: o e-mail do comprador não pode ser igual ao e-mail da conta vendedora do PagBank. Corrija o e-mail no contrato e tente novamente.`;
+  }
+  if (isInvalidCredentialError(data.message) || isInvalidCredentialError(data.raw)) {
+    return `${prefix}: credencial PagBank inválida. Use um PAGBANK_TOKEN de produção quando PAGBANK_ENV=production ou volte a URL/ambiente para sandbox com token sandbox.`;
   }
   if (data.message) return `${prefix}: ${data.message}`;
   if (data.raw) return `${prefix}: ${String(data.raw).slice(0, 300)}`;
@@ -339,6 +380,8 @@ module.exports = {
   getPagBankConfig,
   isOrderPaid,
   isPagBankConfigured,
+  isPixCopyPasteText,
+  isBuyerMerchantEmailError,
   isValidCnpj,
   isValidCpf,
   isValidEmail,

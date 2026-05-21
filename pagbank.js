@@ -37,19 +37,57 @@ function validarCriacaoPagamento({ valor, descricao, cliente }) {
 }
 
 function encontrarQrCode(order) {
-  const qrCodes = Array.isArray(order?.qr_codes) ? order.qr_codes : [];
-  return qrCodes[0] || null;
+  const qrCodes = order?.qr_codes || order?.qr_code || [];
+  if (Array.isArray(qrCodes)) return qrCodes[0] || null;
+  return qrCodes && typeof qrCodes === 'object' ? qrCodes : null;
 }
 
 function encontrarLink(qrCode, media) {
-  return (qrCode?.links || []).find((link) => link.media === media)?.href || null;
+  const expectedRel = media === 'image/png' ? 'PNG' : 'BASE64';
+  return (qrCode?.links || []).find((link) => (
+    String(link.media || '').toLowerCase() === media ||
+    String(link.rel || '').toUpperCase().includes(expectedRel)
+  ))?.href || null;
+}
+
+function gerarImagemQrCode(qrCodeTexto) {
+  const texto = String(qrCodeTexto || '').trim();
+  if (!texto) return null;
+  return `https://api.qrserver.com/v1/create-qr-code/?size=280x280&data=${encodeURIComponent(texto)}`;
+}
+
+function textoPixValido(valor) {
+  const texto = String(valor || '').trim();
+  return /^000201/.test(texto) && /6304[0-9A-F]{4}$/i.test(texto) && texto.length >= 80;
+}
+
+function erroEmailCompradorIgualVendedor(mensagem) {
+  return String(mensagem || '').toLowerCase().includes('buyer email must not be equals to merchant email');
+}
+
+function erroCredencialInvalida(mensagem) {
+  const texto = String(mensagem || '').toLowerCase();
+  return texto.includes('invalid credential') || texto.includes('review authorization');
 }
 
 function formatarErroPagBank(data, statusCode) {
   if (data?.error_messages?.length) {
-    return data.error_messages.map((erro) => erro.description || erro.message || erro.code).filter(Boolean).join('; ');
+    const mensagens = data.error_messages.map((erro) => erro.description || erro.message || erro.code).filter(Boolean);
+    if (mensagens.some(erroEmailCompradorIgualVendedor)) {
+      return 'O e-mail do comprador não pode ser igual ao e-mail da conta vendedora do PagBank.';
+    }
+    if (mensagens.some(erroCredencialInvalida)) {
+      return 'Credencial PagBank inválida. Use token de produção com URL de produção, ou token sandbox com URL sandbox.';
+    }
+    return mensagens.join('; ');
   }
 
+  if (erroEmailCompradorIgualVendedor(data?.message)) {
+    return 'O e-mail do comprador não pode ser igual ao e-mail da conta vendedora do PagBank.';
+  }
+  if (erroCredencialInvalida(data?.message) || erroCredencialInvalida(data?.raw)) {
+    return 'Credencial PagBank inválida. Use token de produção com URL de produção, ou token sandbox com URL sandbox.';
+  }
   if (data?.message) return data.message;
   if (data?.raw) return String(data.raw).slice(0, 500);
   return `PagBank HTTP ${statusCode}`;
@@ -126,13 +164,15 @@ async function criarPedidoPix({ valor, descricao, cliente }) {
     'x-idempotency-key': referenceId
   });
   const qrCode = encontrarQrCode(order);
+  const qrCodeTexto = textoPixValido(qrCode?.text) ? String(qrCode.text).trim() : null;
+  const qrCodeImagem = gerarImagemQrCode(qrCodeTexto) || encontrarLink(qrCode, 'image/png');
 
   return {
     order,
     id: order.id,
     reference_id: order.reference_id || referenceId,
-    qr_code_texto: qrCode?.text || null,
-    qr_code_imagem: encontrarLink(qrCode, 'image/png')
+    qr_code_texto: qrCodeTexto,
+    qr_code_imagem: qrCodeImagem
   };
 }
 

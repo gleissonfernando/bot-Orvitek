@@ -82,7 +82,16 @@ const {
 } = require('./planSelectionPanel');
 const { replacePanelMessage } = require('./panelUtils');
 const { buildRenewPanelPayload, buildSuggestionsPanelPayload, buildTicketPanelPayload } = require('./staticPanels');
-const { consultOrder, createPixOrder, isPagBankConfigured, summarizeOrderStatus, validatePagBankCustomer } = require('./pagbank');
+const {
+  buildPixPaymentFromOrder,
+  consultOrder,
+  createPixOrder,
+  isBuyerMerchantEmailError,
+  isPagBankConfigured,
+  isPixCopyPasteText,
+  summarizeOrderStatus,
+  validatePagBankCustomer
+} = require('./pagbank');
 
 const PROJECT_ACCESS_CATEGORY_ID = process.env.PROJECT_ACCESS_CATEGORY_ID || '1505195763469127770';
 const HOSTING_LOG_CHANNEL_ID = process.env.HOSTING_LOG_CHANNEL_ID || '1505275946721087730';
@@ -250,11 +259,14 @@ function channelSafe(value) {
     .slice(0, 80);
 }
 
-function staffOverwrites(setup) {
+function staffOverwrites(guild, setup) {
   return staffRoleKeys
-    .filter((key) => setup.roles[key])
-    .map((key) => ({
-      id: setup.roles[key],
+    .map((key) => setup.roles?.[key])
+    .filter(Boolean)
+    .map((roleId) => guild.roles.cache.get(roleId))
+    .filter(Boolean)
+    .map((role) => ({
+      id: role.id,
       allow: [
         PermissionFlagsBits.ViewChannel,
         PermissionFlagsBits.SendMessages,
@@ -458,7 +470,7 @@ function paymentModeLabel(mode) {
 function truncatePixCode(value) {
   const text = String(value || '').trim();
   if (!text) return 'Código Pix não retornado pelo PagBank.';
-  return text.length > 980 ? `${text.slice(0, 977)}...` : text;
+  return text;
 }
 
 function buildPagBankPaymentEmbed(payment, contract) {
@@ -487,6 +499,7 @@ function buildPagBankPaymentEmbed(payment, contract) {
   }
 
   if (payment?.qrCodePng && payment.status !== 'paid') {
+    embed.addFields({ name: 'Imagem do QR Code', value: `[Abrir QR Code](${payment.qrCodePng})`, inline: true });
     embed.setImage(payment.qrCodePng);
   }
 
@@ -501,6 +514,28 @@ function buildPagBankPaymentActions() {
       new ButtonBuilder().setCustomId('payment_reject').setLabel('Recusar pagamento').setStyle(ButtonStyle.Danger)
     )
   ];
+}
+
+async function refreshPagBankPaymentDetails(payment, channelId) {
+  const hasPublicQrImage = payment?.qrCodePng && !String(payment.qrCodePng).includes('api.pagseguro.com/qrcode/');
+  const hasValidPixText = isPixCopyPasteText(payment?.qrCodeText);
+  if (!payment?.orderId || (hasValidPixText && hasPublicQrImage)) {
+    return payment;
+  }
+
+  const order = await consultOrder(payment.orderId);
+  const refreshed = await buildPixPaymentFromOrder(order, payment.amountCents || null, payment.referenceId || order.reference_id || null);
+  return upsertPayment(channelId, {
+    ...payment,
+    ...refreshed,
+    guildId: payment.guildId,
+    userId: payment.userId,
+    userTag: payment.userTag,
+    contractId: payment.contractId,
+    projectName: payment.projectName,
+    plan: payment.plan,
+    createdAt: payment.createdAt || refreshed.createdAt
+  });
 }
 
 function buildManualPixPaymentEmbed(settings, contract, amount) {
@@ -1898,13 +1933,14 @@ async function ensureProjectChannel(guild, setup, user, projectName) {
   const categoryName = getProjectCategoryName(projectName, user.username);
   let category = guild.channels.cache.find((entry) => entry.name === categoryName && entry.type === ChannelType.GuildCategory);
   if (!category) {
+    const everyoneRoleId = guild.roles.everyone?.id || guild.id;
     category = await guild.channels.create({
       name: categoryName,
       type: ChannelType.GuildCategory,
       permissionOverwrites: [
-        { id: guild.roles.everyone.id, deny: [PermissionFlagsBits.ViewChannel] },
+        { id: everyoneRoleId, deny: [PermissionFlagsBits.ViewChannel] },
         { id: user.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.ReadMessageHistory], deny: [PermissionFlagsBits.SendMessages] },
-        ...staffOverwrites(setup)
+        ...staffOverwrites(guild, setup)
       ],
       reason: `Categoria de projeto criada para ${user.tag}`
     }).catch(() => null);
@@ -2015,17 +2051,18 @@ async function openTicket(interaction, setup, type, reason = null) {
   }
 
   const supportCategoryId = setup.categories.supportCategory;
+  const everyoneRoleId = interaction.guild.roles.everyone?.id || interaction.guild.id;
   const channel = await interaction.guild.channels.create({
     name: `suporte-${slug}-${username}`.slice(0, 90),
     type: ChannelType.GuildText,
     parent: supportCategoryId || null,
     permissionOverwrites: [
-      { id: interaction.guild.roles.everyone.id, deny: [PermissionFlagsBits.ViewChannel] },
+      { id: everyoneRoleId, deny: [PermissionFlagsBits.ViewChannel] },
       {
         id: interaction.user.id,
         allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory]
       },
-      ...staffOverwrites(setup)
+      ...staffOverwrites(interaction.guild, setup)
     ],
     reason: `Ticket aberto por ${interaction.user.tag}`
   });
@@ -2401,10 +2438,15 @@ async function handleQueueAction(interaction, setup) {
           plan: ticket.type
         });
       }
+
+      payment = await refreshPagBankPaymentDetails(payment, interaction.channelId);
+      if (!isPixCopyPasteText(payment?.qrCodeText)) {
+        throw new Error('O PagBank criou o pedido, mas não retornou um Pix copia e cola válido. Verifique se existe uma chave Pix ativa na conta PagBank e tente gerar novamente.');
+      }
     } catch (error) {
-      if (String(error.message || '').startsWith('Dados do contrato inválidos')) {
+      if (String(error.message || '').startsWith('Dados do contrato inválidos') || isBuyerMerchantEmailError(error.message)) {
         await interaction.editReply(toComponentsV2({
-          content: `${error.message}\n\nClique em **Corrigir contrato** e preencha novamente com dados reais.`,
+          content: `${error.message}\n\nClique em **Corrigir contrato** e informe um e-mail do comprador diferente do e-mail da conta PagBank vendedora.`,
           components: buildContractCorrectionActions()
         }));
         return;
@@ -2481,7 +2523,11 @@ async function handleQueueAction(interaction, setup) {
     }
 
     const status = summarizeOrderStatus(order, payment.amountCents);
+    const hadInvalidQrText = !isPixCopyPasteText(payment.qrCodeText);
+    const hadInvalidQrImage = !payment.qrCodePng || String(payment.qrCodePng).includes('api.pagseguro.com/qrcode/');
+    const refreshedPayment = await buildPixPaymentFromOrder(order, payment.amountCents, payment.referenceId || order.reference_id || null);
     const updatedPayment = upsertPayment(interaction.channelId, {
+      ...refreshedPayment,
       status: status.paid ? 'paid' : 'awaiting_payment',
       rawStatus: status.status,
       chargeId: status.chargeId || payment.chargeId || null,
@@ -2498,6 +2544,14 @@ async function handleQueueAction(interaction, setup) {
     });
 
     if (!status.paid) {
+      if ((hadInvalidQrText || hadInvalidQrImage) && isPixCopyPasteText(updatedPayment.qrCodeText)) {
+        await interaction.channel.send(toComponentsV2({
+          content: `${interaction.user}, reenviei o Pix com um QR Code atualizado.`,
+          embeds: [buildPagBankPaymentEmbed(updatedPayment, signedContract)],
+          components: buildPagBankPaymentActions()
+        })).catch(() => null);
+      }
+
       await interaction.editReply(toComponentsV2(`Pagamento ainda não confirmado pelo PagBank. Status atual: ${status.status}.`));
       return;
     }

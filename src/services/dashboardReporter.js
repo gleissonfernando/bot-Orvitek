@@ -129,6 +129,7 @@ class DashboardReporter {
 
       if (this.env.BOT_DASHBOARD_TOKEN) {
         headers['X-Dashboard-Token'] = this.env.BOT_DASHBOARD_TOKEN;
+        headers['Authorization'] = `Bearer ${this.env.BOT_DASHBOARD_TOKEN}`;
       }
 
       const response = await fetch(this.endpoint, {
