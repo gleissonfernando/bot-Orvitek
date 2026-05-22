@@ -25,6 +25,19 @@ function isPagBankConfigured() {
   return Boolean(getPagBankConfig().token);
 }
 
+function getPagBankConfigStatus() {
+  const config = getPagBankConfig();
+  return {
+    configured: Boolean(config.token),
+    environment: config.environment || 'sandbox',
+    baseUrl: config.baseUrl,
+    hasToken: Boolean(config.token),
+    tokenLength: config.token ? config.token.length : 0,
+    hasNotificationUrl: Boolean(config.notificationUrl),
+    expirationMinutes: config.expirationMinutes
+  };
+}
+
 function moneyToCents(value) {
   const amount = Number(value);
   if (!Number.isFinite(amount) || amount <= 0) {
@@ -376,6 +389,7 @@ module.exports = {
   consultOrder,
   createPixOrder,
   getPagBankConfig,
+  getPagBankConfigStatus,
   isOrderPaid,
   isPagBankConfigured,
   isPixCopyPasteText,

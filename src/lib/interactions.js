@@ -467,6 +467,38 @@ function paymentModeLabel(mode) {
   return 'PagBank automático';
 }
 
+function hasManualPaymentConfig(settings, mode) {
+  if (mode === 'pix_key') return Boolean(settings.payment?.pixKey);
+  if (mode === 'qr_code') return Boolean(settings.payment?.qrCodeText || settings.payment?.qrCodeImageUrl);
+  return false;
+}
+
+function resolvePurchasePaymentMode(settings) {
+  const selectedMode = settings.payment?.mode || 'pagbank';
+
+  if (selectedMode === 'pagbank' && isPagBankConfigured()) {
+    return { mode: 'pagbank', selectedMode };
+  }
+
+  if ((selectedMode === 'pix_key' || selectedMode === 'qr_code') && hasManualPaymentConfig(settings, selectedMode)) {
+    return { mode: selectedMode, selectedMode };
+  }
+
+  if (isPagBankConfigured()) {
+    return { mode: 'pagbank', selectedMode, fallback: true };
+  }
+
+  if (hasManualPaymentConfig(settings, 'pix_key')) {
+    return { mode: 'pix_key', selectedMode, fallback: true };
+  }
+
+  if (hasManualPaymentConfig(settings, 'qr_code')) {
+    return { mode: 'qr_code', selectedMode, fallback: true };
+  }
+
+  return { mode: null, selectedMode };
+}
+
 function truncatePixCode(value) {
   const text = String(value || '').trim();
   if (!text) return 'Código Pix não retornado pelo PagBank.';
@@ -763,18 +795,18 @@ function buildPaymentStepPanel(contract, queueEntry = {}) {
         .setTitle('Pagamento do plano')
         .setDescription(
           `A chave do projeto **${queueEntry.projectName || contract?.projectName || 'seu projeto'}** foi criada.\n\n` +
-            'Agora gere o Pix PagBank para pagar o valor do plano. Depois do pagamento, use **Verificar PagBank**.'
+            'Agora gere o pagamento Pix do plano. Se for PagBank, use **Verificar PagBank** depois do pagamento; se for manual, aguarde a aprovação da equipe.'
         )
         .addFields(
           { name: 'Chave de acesso', value: queueEntry.accessKey ? `\`${queueEntry.accessKey}\`` : 'criada', inline: true },
           { name: 'Valor a pagar', value: brl(paymentPrice), inline: true },
-          { name: 'Status', value: 'Aguardando Pix PagBank', inline: true }
+          { name: 'Status', value: 'Aguardando pagamento Pix', inline: true }
         )
         .setTimestamp()
     ],
     components: [
       new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId('queue_join').setLabel('Gerar Pix PagBank').setStyle(ButtonStyle.Primary),
+        new ButtonBuilder().setCustomId('queue_join').setLabel('Gerar pagamento Pix').setStyle(ButtonStyle.Primary),
         new ButtonBuilder().setCustomId('payment_check').setLabel('Verificar PagBank').setStyle(ButtonStyle.Success)
       ),
       new ActionRowBuilder().addComponents(
@@ -1320,7 +1352,7 @@ function buildTicketActions(type, contractSigned = false, couponAvailable = fals
       );
       rows.push(
         new ActionRowBuilder().addComponents(
-          new ButtonBuilder().setCustomId('queue_join').setLabel('Gerar Pix PagBank').setStyle(ButtonStyle.Primary),
+          new ButtonBuilder().setCustomId('queue_join').setLabel('Gerar pagamento Pix').setStyle(ButtonStyle.Primary),
           new ButtonBuilder().setCustomId('payment_check').setLabel('Verificar PagBank').setStyle(ButtonStyle.Success),
           new ButtonBuilder().setCustomId('queue_approve').setLabel('Aprovar na fila').setStyle(ButtonStyle.Success),
           new ButtonBuilder().setCustomId('queue_development').setLabel('Desenvolvimento').setStyle(ButtonStyle.Secondary),
@@ -2330,7 +2362,7 @@ async function handleQueueAction(interaction, setup) {
 
     const queueEntry = getQueueEntry(interaction.channelId);
     if (!queueEntry?.accessKey) {
-      await interaction.reply(privateReply('Crie a chave de acesso antes de gerar o Pix PagBank.'));
+      await interaction.reply(privateReply('Crie a chave de acesso antes de gerar o pagamento Pix.'));
       return;
     }
 
@@ -2338,7 +2370,15 @@ async function handleQueueAction(interaction, setup) {
 
     const position = getQueuePosition(interaction.guild.id, interaction.channelId);
     const settings = getSystemSettings(interaction.guild.id);
-    const paymentMode = settings.payment?.mode || 'pagbank';
+    const resolvedPayment = resolvePurchasePaymentMode(settings);
+    const paymentMode = resolvedPayment.mode;
+    const paymentSettings = {
+      ...settings,
+      payment: {
+        ...(settings.payment || {}),
+        mode: paymentMode || settings.payment?.mode || 'pagbank'
+      }
+    };
     const currentPricing = getPlanPricing(ticket.type, settings, queueEntry?.couponCode || null, { member });
     const paymentPrice = getEntryPaymentAmount(signedContract);
     const pricing = {
@@ -2354,13 +2394,18 @@ async function handleQueueAction(interaction, setup) {
     let payment = getPayment(interaction.channelId);
     const reusedPayment = paymentIsReusable(payment);
 
+    if (!paymentMode) {
+      await interaction.editReply(toComponentsV2('Nenhum pagamento está configurado. Configure o PagBank ou cadastre uma chave Pix/QR Code no /painel.'));
+      return;
+    }
+
     if (paymentMode === 'pix_key' || paymentMode === 'qr_code') {
-      if (paymentMode === 'pix_key' && !settings.payment?.pixKey) {
+      if (paymentMode === 'pix_key' && !paymentSettings.payment?.pixKey) {
         await interaction.editReply(toComponentsV2('A chave Pix manual ainda não foi cadastrada no /painel.'));
         return;
       }
 
-      if (paymentMode === 'qr_code' && !settings.payment?.qrCodeText && !settings.payment?.qrCodeImageUrl) {
+      if (paymentMode === 'qr_code' && !paymentSettings.payment?.qrCodeText && !paymentSettings.payment?.qrCodeImageUrl) {
         await interaction.editReply(toComponentsV2('O QR Code Pix manual ainda não foi cadastrado no /painel.'));
         return;
       }
@@ -2403,9 +2448,10 @@ async function handleQueueAction(interaction, setup) {
       await interaction.channel.send(toComponentsV2({
         content:
           `${interaction.user}, pagamento Pix enviado. Clientes na frente no momento: **${position.ahead}**.` +
+          (resolvedPayment.fallback ? `\nModo selecionado indisponível; usei **${paymentModeLabel(paymentMode)}**.` : '') +
           (pricing.couponMatches ? `\nCupom aplicado: **${pricing.coupon.code}** (-${pricing.coupon.percent}%).` : '') +
           (pricing.boostActive ? `\nDesconto de boost aplicado: **${pricing.boostPercent}%** enquanto o boost estiver ativo.` : ''),
-        embeds: [buildManualPixPaymentEmbed(settings, signedContract, pricing.payment)],
+        embeds: [buildManualPixPaymentEmbed(paymentSettings, signedContract, pricing.payment)],
         components: buildManualPixPaymentActions()
       }));
       await interaction.editReply(toComponentsV2(paymentMode === 'pix_key' ? 'Chave Pix enviada no canal.' : 'QR Code Pix enviado no canal.'));
@@ -2491,14 +2537,14 @@ async function handleQueueAction(interaction, setup) {
   }
 
   if (interaction.customId === 'payment_check') {
-    if (!isPagBankConfigured()) {
-      await interaction.reply(privateReply('O PagBank ainda não está configurado. Defina PAGBANK_TOKEN no .env para consultar o pagamento.'));
-      return;
-    }
-
     const payment = getPayment(interaction.channelId);
     if (payment && payment.provider !== 'pagbank') {
       await interaction.reply(privateReply('Este pagamento é manual. Aguarde a equipe aprovar pelo botão **Pagamento aprovado**.'));
+      return;
+    }
+
+    if (!isPagBankConfigured()) {
+      await interaction.reply(privateReply('O PagBank ainda não está configurado. Defina PAGBANK_TOKEN no .env para consultar o pagamento automático.'));
       return;
     }
 

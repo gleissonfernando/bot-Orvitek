@@ -17,7 +17,7 @@ const { toComponentsV2 } = require('./lib/componentsV2');
 const { addWarning, expireClient, getGuildSetup, getHostingCycleKey, getHostingGraceDeadline, getReport, getSystemSettings, initializeStore, listClients } = require('./lib/store');
 const { buildWelcomeChannelEmbed, buildWelcomeDmEmbed } = require('./lib/welcome');
 const { registerDashboardReporter } = require('./services/dashboardReporter');
-const { isPagBankConfigured } = require('./lib/pagbank');
+const { getPagBankConfigStatus, isPagBankConfigured } = require('./lib/pagbank');
 
 if (!process.env.DISCORD_TOKEN) {
   throw new Error('Configure DISCORD_TOKEN no arquivo .env.');
@@ -188,7 +188,9 @@ async function shutdown(signal) {
 
 client.once(Events.ClientReady, async (readyClient) => {
   console.log(`Bot conectado como ${readyClient.user.tag}.`);
+  const pagBankStatus = getPagBankConfigStatus();
   console.log(`[PagBank] ${isPagBankConfigured() ? 'PAGBANK_TOKEN carregado.' : 'PAGBANK_TOKEN nao configurado no ambiente.'}`);
+  console.log(`[PagBank] Ambiente=${pagBankStatus.environment} URL=${pagBankStatus.baseUrl} Token=${pagBankStatus.hasToken ? `sim (${pagBankStatus.tokenLength} chars)` : 'nao'} Webhook=${pagBankStatus.hasNotificationUrl ? 'sim' : 'nao'} Expira=${pagBankStatus.expirationMinutes}min`);
   registerDashboardReporter(readyClient);
   await sendLifecycleLog(readyClient, 'Bot ligado', 'O bot foi iniciado e está online.', colors.default);
   startSchedulers(readyClient);
