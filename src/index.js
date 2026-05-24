@@ -18,6 +18,7 @@ const { addWarning, expireClient, getGuildSetup, getHostingCycleKey, getHostingG
 const { buildWelcomeChannelEmbed, buildWelcomeDmEmbed } = require('./lib/welcome');
 const { getPagBankConfigStatus, isPagBankConfigured } = require('./lib/pagbank');
 const { registerDashboardReporter } = require('./services/dashboardReporter');
+const { logError, registerErrorMonitor } = require('./lib/errorMonitor');
 
 if (!process.env.DISCORD_TOKEN) {
   throw new Error('Configure DISCORD_TOKEN no arquivo .env.');
@@ -35,6 +36,8 @@ const client = new Client({
     GatewayIntentBits.GuildModeration
   ]
 });
+
+registerErrorMonitor(client);
 
 client.commands = new Collection();
 
@@ -479,6 +482,6 @@ async function sendWeeklyReports(readyClient) {
 initializeStore()
   .then(() => client.login(process.env.DISCORD_TOKEN))
   .catch((error) => {
-    console.error(`Nao foi possivel inicializar o bot: ${error.message}`);
+    logError('startup', error);
     process.exit(1);
   });
