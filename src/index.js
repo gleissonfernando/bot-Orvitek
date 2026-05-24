@@ -20,8 +20,11 @@ const { getPagBankConfigStatus, isPagBankConfigured } = require('./lib/pagbank')
 const { registerDashboardReporter } = require('./services/dashboardReporter');
 const { logError, registerErrorMonitor } = require('./lib/errorMonitor');
 
-if (!process.env.DISCORD_TOKEN) {
-  throw new Error('Configure DISCORD_TOKEN no arquivo .env.');
+const discordTokenSource = process.env.DISCORD_BOT_TOKEN ? 'DISCORD_BOT_TOKEN' : 'DISCORD_TOKEN';
+const discordToken = String(process.env.DISCORD_BOT_TOKEN || process.env.DISCORD_TOKEN || '').trim();
+
+if (!discordToken) {
+  throw new Error('Configure DISCORD_BOT_TOKEN ou DISCORD_TOKEN no arquivo .env.');
 }
 
 const LIFECYCLE_LOG_CHANNEL_ID = process.env.LIFECYCLE_LOG_CHANNEL_ID || '1505195775381209188';
@@ -494,9 +497,9 @@ async function sendWeeklyReports(readyClient) {
 
 initializeStore()
   .then(async () => {
-    const tokenInfo = describeDiscordToken(process.env.DISCORD_TOKEN);
+    const tokenInfo = describeDiscordToken(discordToken);
     console.log(
-      `[DiscordLogin] Iniciando login. Token configurado=${tokenInfo.configured ? 'sim' : 'nao'} ` +
+      `[DiscordLogin] Iniciando login. Fonte=${discordTokenSource} Token configurado=${tokenInfo.configured ? 'sim' : 'nao'} ` +
         `tamanho=${tokenInfo.length} partes=${tokenInfo.parts} formato=${tokenInfo.looksLikeBotToken ? 'ok' : 'invalido'} ` +
         `espaco=${tokenInfo.hasWhitespace ? 'sim' : 'nao'}`
     );
@@ -512,7 +515,7 @@ initializeStore()
     }, DISCORD_LOGIN_READY_TIMEOUT_MS);
     readyTimeout.unref?.();
 
-    await client.login(String(process.env.DISCORD_TOKEN || '').trim());
+    await client.login(discordToken);
   })
   .catch((error) => {
     logError('startup', error);
