@@ -477,6 +477,6 @@ async function sendWeeklyReports(readyClient) {
 initializeStore()
   .then(() => client.login(process.env.DISCORD_TOKEN))
   .catch((error) => {
-    console.error(`Nao foi possivel inicializar o banco de dados: ${error.message}`);
+    console.error(`Nao foi possivel inicializar o bot: ${error.message}`);
     process.exit(1);
   });
