@@ -25,7 +25,20 @@ if (!process.env.DISCORD_TOKEN) {
 }
 
 const LIFECYCLE_LOG_CHANNEL_ID = process.env.LIFECYCLE_LOG_CHANNEL_ID || '1505195775381209188';
+const DISCORD_LOGIN_READY_TIMEOUT_MS = Number(process.env.DISCORD_LOGIN_READY_TIMEOUT_MS || 30000);
 let shuttingDown = false;
+
+function describeDiscordToken(token) {
+  const value = String(token || '').trim();
+  const parts = value.split('.');
+  return {
+    configured: Boolean(value),
+    length: value.length,
+    parts: parts.length,
+    looksLikeBotToken: parts.length === 3 && parts.every(Boolean),
+    hasWhitespace: /\s/.test(value)
+  };
+}
 
 const client = new Client({
   intents: [
@@ -480,7 +493,27 @@ async function sendWeeklyReports(readyClient) {
 }
 
 initializeStore()
-  .then(() => client.login(process.env.DISCORD_TOKEN))
+  .then(async () => {
+    const tokenInfo = describeDiscordToken(process.env.DISCORD_TOKEN);
+    console.log(
+      `[DiscordLogin] Iniciando login. Token configurado=${tokenInfo.configured ? 'sim' : 'nao'} ` +
+        `tamanho=${tokenInfo.length} partes=${tokenInfo.parts} formato=${tokenInfo.looksLikeBotToken ? 'ok' : 'invalido'} ` +
+        `espaco=${tokenInfo.hasWhitespace ? 'sim' : 'nao'}`
+    );
+
+    if (!tokenInfo.looksLikeBotToken || tokenInfo.hasWhitespace) {
+      console.warn('[DiscordLogin] O DISCORD_TOKEN parece incorreto. Use o token do Bot no Discord Developer Portal, sem aspas e sem espacos.');
+    }
+
+    const readyTimeout = setTimeout(() => {
+      if (!client.isReady()) {
+        logError('discordReadyTimeout', new Error(`Cliente Discord nao ficou online em ${DISCORD_LOGIN_READY_TIMEOUT_MS}ms apos iniciar login.`));
+      }
+    }, DISCORD_LOGIN_READY_TIMEOUT_MS);
+    readyTimeout.unref?.();
+
+    await client.login(String(process.env.DISCORD_TOKEN || '').trim());
+  })
   .catch((error) => {
     logError('startup', error);
     process.exit(1);
