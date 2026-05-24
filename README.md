@@ -1,0 +1,143 @@
+# SetupBot para Discord
+
+Bot profissional para configurar servidores Discord de venda de produtos digitais.
+
+## Funcionalidades
+
+- `/ativar` cria cargos, categorias, canais e paineis automaticamente.
+- Sistema de verificacao, compra, renovacao, tickets e sugestoes.
+- Boas-vindas, saidas, auto-moderacao, vencimento de clientes e relatorios.
+- Comandos essenciais para ativar o servidor e publicar paineis.
+- Pagamento Pix pelo PagBank no fluxo de contrato e fila.
+
+## Estrutura
+
+```text
+src/
+  commands/      Comandos slash do Discord.
+  config/        Configuracao de cargos, canais e cores.
+  lib/           Regras de negocio e componentes reutilizaveis.
+  payments/      Servidor Express, MongoDB de pedidos, PagBank e comprovantes.
+  services/      Servicos em segundo plano.
+  index.js       Entrada principal do bot.
+scripts/
+  check-syntax.js        Verifica a sintaxe de todos os arquivos JS.
+  discord/               Scripts operacionais de deploy, sync e publicacao.
+data/                    Dados locais gerados em desenvolvimento.
+```
+
+## Instalar
+
+Requer Node.js `>=20.19.0`.
+
+```bash
+npm install
+```
+
+Copie `.env.example` para `.env` e preencha:
+
+```bash
+DISCORD_TOKEN=token_do_bot
+CLIENT_ID=id_da_aplicacao
+GUILD_ID=id_do_servidor
+MONGODB_URI=sua_uri_mongodb
+MONGODB_DB_NAME=orvitek
+PAGBANK_ENV=sandbox
+PAGBANK_TOKEN=token_pagbank
+```
+
+Os pedidos e pagamentos ficam salvos no MongoDB, na coleção `pedidos` por padrão. Os demais dados do bot usam a coleção `bot_store`. Para trocar os nomes, ajuste `MONGODB_DB_NAME`, `MONGODB_ORDERS_COLLECTION` e `MONGODB_STORE_COLLECTION`.
+
+Para usar pagamento real, configure `PAGBANK_ENV=production` e use o token de produção da conta PagBank. O bot gera o Pix após o contrato e a chave de acesso, e o cliente usa o botão **Verificar PagBank** para confirmar o pagamento.
+
+## Registrar comandos
+
+```bash
+npm run deploy
+```
+
+## Iniciar bot
+
+```bash
+npm start
+```
+
+## Iniciar servidor de pagamentos
+
+```bash
+npm run payments
+```
+
+O `npm run payments` sobe o Express em `PORT` com:
+
+- `POST /pagamento/criar`
+- `POST /webhook/pagbank`
+- `GET /pagamento/:id/status`
+- `GET /pagamentos`
+
+## Integracao com Orvitek Hospedagem
+
+Este bot precisa enviar informacoes para o bot Orvitek-hospedagem. Mantenha `ORVITEK_HOSTING_BOT_ENABLED=true` no `.env` e configure o endpoint correto do Orvitek-hospedagem.
+
+Quando essa integracao esta ativa e a hospedagem de um cliente passa do prazo de tolerancia, o bot chama `deleteHostingAccess`, grava uma ordem no MongoDB e tambem pode enviar um `POST` para o outro bot de hospedagem antes de limpar a chave local do cliente. Configure no `.env`:
+
+```bash
+ORVITEK_HOSTING_BOT_ENABLED=true
+MONGODB_HOSTING_EVENTS_COLLECTION=hosting_shutdown_events
+ORVITEK_HOSTING_BOT_URL=https://hospedagem.seudominio.com/api/orvitek/desligar
+ORVITEK_HOSTING_BOT_TOKEN=um_token_compartilhado_entre_os_bots
+ORVITEK_HOSTING_BOT_TIMEOUT_MS=10000
+ORVITEK_HOSTING_BOT_DEBUG=false
+```
+
+No banco, o bot grava/upserta um documento na colecao `hosting_shutdown_events` com `status: "pending"`, `eventId`, `payload`, `createdAt` e `updatedAt`. O outro bot pode buscar por `status: "pending"`, desligar usando `payload.hosting.accessKey` e depois atualizar para `status: "processed"` com `processedAt`.
+
+Para liberar cadastro de bots hospedados, o bot tambem grava/upserta na colecao `hosting_registration_permissions`. O outro bot deve permitir o cadastro somente quando encontrar `allowed: true` e `status: "paid"` para a mesma `accessKey`. Se nao encontrar, ou se `allowed` for `false`, deve bloquear o formulario e mostrar pagamento nao confirmado.
+
+Para ver no console se os dois bots estao conversando, coloque `ORVITEK_HOSTING_BOT_DEBUG=true` no `.env`. O console vai mostrar quando a permissao de cadastro for gravada, quando uma ordem de desligamento for registrada no MongoDB, quando o POST for enviado ao outro bot e qual status HTTP voltou.
+
+Se voce tambem usar HTTP, o outro bot deve aceitar `Authorization: Bearer <ORVITEK_HOSTING_BOT_TOKEN>` e receber um JSON com `event`, `guild`, `client`, `hosting` e `action`. O campo principal para desligar a hospedagem e `hosting.accessKey`; tambem sao enviados `client.userId`, `client.userTag`, `hosting.projectName`, `hosting.dueAt`, `hosting.graceUntil` e `action.reason`.
+
+## Testar webhook com ngrok
+
+```bash
+ngrok http 3000
+```
+
+Use a URL HTTPS gerada no `.env`:
+
+```bash
+WEBHOOK_URL=https://sua-url-ngrok.ngrok-free.app/webhook/pagbank
+```
+
+## Produção PagBank
+
+Para trocar sandbox por produção, altere:
+
+```bash
+PAGBANK_URL=https://api.pagseguro.com
+```
+
+## Gmail App Password
+
+Conta Google -> Segurança -> Verificação em duas etapas -> Senhas de app. Use a senha gerada em `GMAIL_APP_PASSWORD`.
+
+## Discord DM
+
+Crie o bot em `discord.com/developers` -> New Application -> Bot -> Reset Token. Use em `DISCORD_BOT_TOKEN`.
+
+Para obter o Discord User ID: Discord -> Configurações -> Avançado -> Ativar Modo Desenvolvedor -> clique com botão direito no usuário -> Copiar ID.
+
+## Comandos principais
+
+- `/ativar`
+- `/clear`
+- `/produto`
+- `/pedido`
+- `/cliente`
+- `/painel-verificar`
+- `/painel`
+
+## Permissoes
+
+Pode administrar quem tiver o cargo `ADMIN_ROLE_ID` configurado no `.env` ou a permissao **Gerenciar Servidor**.

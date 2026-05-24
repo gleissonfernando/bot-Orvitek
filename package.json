@@ -1,0 +1,29 @@
+{
+  "name": "bot-vendas-discord",
+  "version": "1.0.0",
+  "description": "Bot de Discord para gerenciar vendas de bots.",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "payments": "node src/payments/server.js",
+    "deploy": "node scripts/discord/deploy-commands.js",
+    "check": "node scripts/check-syntax.js"
+  },
+  "keywords": [
+    "discord",
+    "bot",
+    "vendas"
+  ],
+  "engines": {
+    "node": ">=20.19.0"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "discord.js": "^14.15.3",
+    "dotenv": "^16.4.5",
+    "express": "^4.21.2",
+    "mongodb": "^7.2.0",
+    "nodemailer": "^8.0.7",
+    "pdfkit": "^0.18.0"
+  }
+}
