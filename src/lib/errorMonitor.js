@@ -6,7 +6,7 @@ const errorLogPath = path.join(logsDir, 'errors.log');
 
 function redact(value) {
   return String(value || '')
-    .replace(/([A-Za-z0-9_-]+\.){2}[A-Za-z0-9_-]+/g, '[jwt-redacted]')
+    .replace(/[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/g, '[jwt-redacted]')
     .replace(/(Bearer\s+)[^\s]+/gi, '$1[token-redacted]')
     .replace(/(token=)[^&\s]+/gi, '$1[token-redacted]')
     .replace(/(DISCORD_TOKEN=)[^\s]+/gi, '$1[token-redacted]')
@@ -21,6 +21,13 @@ function ensureLogsDir() {
 
 function errorDetails(error) {
   if (!error) return 'Erro desconhecido';
+  if (error instanceof AggregateError) {
+    const nested = Array.from(error.errors || [])
+      .map((entry, index) => `  ${index + 1}. ${errorDetails(entry)}`)
+      .join('\n');
+    return `${error.name}: ${error.message || 'multiplos erros'}\n${nested}\n${error.stack || ''}`;
+  }
+
   if (error instanceof Error) {
     return `${error.name}: ${error.message}\n${error.stack || ''}`;
   }

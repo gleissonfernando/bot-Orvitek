@@ -14,6 +14,7 @@ let memoryData = null;
 let mongoClientPromise = null;
 let mongoCollectionPromise = null;
 let mongoWritePromise = Promise.resolve();
+let mongoDisabled = false;
 
 const initialData = {
   setup: {
@@ -65,7 +66,7 @@ function mergeDefaults(data) {
 }
 
 function useMongoStore() {
-  return Boolean(mongoUri);
+  return Boolean(mongoUri) && !mongoDisabled;
 }
 
 function getMongoClient() {
@@ -95,6 +96,7 @@ async function initializeStore() {
     return memoryData;
   }
 
+  try {
   const collection = await getMongoCollection();
   const document = await collection.findOne({ _id: mongoStoreDocumentId });
   memoryData = mergeDefaults(document?.data || {});
@@ -106,6 +108,15 @@ async function initializeStore() {
       { _id: mongoStoreDocumentId, data: memoryData, updatedAt: nowIso() },
       { upsert: true }
     );
+  }
+
+  } catch (error) {
+    mongoDisabled = true;
+    mongoClientPromise = null;
+    mongoCollectionPromise = null;
+    console.warn(`[MongoDB] Nao foi possivel conectar. Usando armazenamento local em ${dbPath}. Erro: ${error.message}`);
+    ensureDatabase();
+    memoryData = mergeDefaults(JSON.parse(fs.readFileSync(dbPath, 'utf8')));
   }
 
   return memoryData;
@@ -146,6 +157,11 @@ function writeDatabase(data) {
       })
       .catch((error) => {
         console.error(`Nao foi possivel salvar dados no MongoDB: ${error.message}`);
+        mongoDisabled = true;
+        mongoClientPromise = null;
+        mongoCollectionPromise = null;
+        ensureDatabase();
+        fs.writeFileSync(dbPath, JSON.stringify(memoryData, null, 2));
       });
     return;
   }
