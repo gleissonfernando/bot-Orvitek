@@ -15,6 +15,11 @@ function round(value, decimals = 0) {
   return Math.round(value * factor) / factor;
 }
 
+function truncate(value, maxLength = 500) {
+  const text = String(value || '').trim();
+  return text.length > maxLength ? `${text.slice(0, maxLength)}...` : text;
+}
+
 function getPackageVersion() {
   return packageInfo.version ? `v${packageInfo.version}` : 'v1.0.0';
 }
@@ -64,6 +69,10 @@ class DashboardReporter {
     if (typeof fetch !== 'function') {
       console.warn('[Dashboard] Sincronizacao desativada: fetch nativo indisponivel. Use Node.js 18+.');
       return;
+    }
+
+    if (!this.env.BOT_DASHBOARD_TOKEN) {
+      console.warn('[Dashboard] BOT_DASHBOARD_TOKEN nao configurado. A API pode recusar a sincronizacao.');
     }
 
     this.report();
@@ -140,7 +149,11 @@ class DashboardReporter {
       });
 
       if (!response.ok) {
-        console.warn(`[Dashboard] Falha ao sincronizar metricas: HTTP ${response.status} ${response.statusText}.`);
+        const responseText = await response.text().catch(() => '');
+        console.warn(
+          `[Dashboard] Falha ao sincronizar metricas: HTTP ${response.status} ${response.statusText}. ` +
+            `Resposta: ${truncate(responseText) || 'sem corpo'}`
+        );
       }
     } catch (error) {
       console.warn(`[Dashboard] Falha ao sincronizar metricas: ${error.message}`);
