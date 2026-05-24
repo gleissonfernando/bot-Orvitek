@@ -9,6 +9,7 @@ const mongoUri = process.env.MONGODB_URI || process.env.MONGO_URI || '';
 const mongoDbName = process.env.MONGODB_DB_NAME || 'orvitek';
 const mongoStoreCollection = process.env.MONGODB_STORE_COLLECTION || 'bot_store';
 const mongoStoreDocumentId = process.env.MONGODB_STORE_DOCUMENT_ID || 'default';
+const mongoRequired = ['1', 'true', 'yes', 'sim', 'on'].includes(String(process.env.MONGODB_REQUIRED || '').trim().toLowerCase());
 
 let memoryData = null;
 let mongoClientPromise = null;
@@ -111,6 +112,11 @@ async function initializeStore() {
   }
 
   } catch (error) {
+    if (mongoRequired) {
+      console.error(`[MongoDB] Conexao obrigatoria falhou. Confira MONGODB_URI, whitelist/IP e credenciais. Erro: ${error.message}`);
+      throw error;
+    }
+
     mongoDisabled = true;
     mongoClientPromise = null;
     mongoCollectionPromise = null;
