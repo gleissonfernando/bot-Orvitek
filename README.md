@@ -86,10 +86,13 @@ ORVITEK_HOSTING_BOT_ENABLED=true
 MONGODB_HOSTING_EVENTS_COLLECTION=hosting_shutdown_events
 HOSTING_API_URL=https://hospedagem.seudominio.com
 ORVITEK_HOSTING_BOT_URL=https://hospedagem.seudominio.com/api/orvitek/desligar
+ORVITEK_HOSTING_BOT_RESTORE_URL=https://hospedagem.seudominio.com/api/orvitek/religar
 ORVITEK_HOSTING_BOT_TOKEN=um_token_compartilhado_entre_os_bots
 ORVITEK_HOSTING_BOT_TIMEOUT_MS=10000
 ORVITEK_HOSTING_BOT_DEBUG=false
 ```
+
+O painel `renovar-plano` pede a chave de acesso do cliente. Depois que a chave e validada, o bot abre um ticket privado, identifica o projeto, envia o metodo de pagamento configurado no painel e aguarda confirmacao. Ao confirmar o pagamento por PagBank ou pelo botao manual **Confirmar pagamento**, o bot marca a hospedagem como paga, devolve o acesso ao canal do projeto, reativa os cargos do cliente e envia um evento `hosting.payment_confirmed.restore` para o bot de hospedagem.
 
 Para o plano FiveM FAC, quando o pagamento/ativacao for aprovado, o bot gera um codigo numerico de 4 digitos e envia por DM ao cliente. Esse codigo e enviado ao bot de hospedagem via `POST ${HOSTING_API_URL}/api/orvitek/fivem-fac-token`; se a API responder conflito, outro codigo e gerado automaticamente. O cliente deve usar `/ativar` no bot hospedado dele para liberar o `/painel-fac`.
 
@@ -106,7 +109,7 @@ Depois publique com o script de planos. O bot agora trabalha com dois paineis se
 
 Se esses IDs ficarem vazios, o setup usa `planos-e-precos` como painel mensal e `comprar-agora` como painel vitalicio.
 
-No banco, o bot grava/upserta um documento na colecao `hosting_shutdown_events` com `status: "pending"`, `eventId`, `payload`, `createdAt` e `updatedAt`. O outro bot pode buscar por `status: "pending"`, desligar usando `payload.hosting.accessKey` e depois atualizar para `status: "processed"` com `processedAt`.
+No banco, o bot grava/upserta um documento na colecao `hosting_shutdown_events` com `status: "pending"`, `eventId`, `payload`, `createdAt` e `updatedAt`. O outro bot pode buscar por `status: "pending"`, desligar ou religar usando `payload.hosting.accessKey` e `payload.action.type`, depois atualizar para `status: "processed"` com `processedAt`.
 
 Para liberar cadastro de bots hospedados, o bot tambem grava/upserta na colecao `hosting_registration_permissions`. O outro bot deve permitir o cadastro somente quando encontrar `allowed: true` e `status: "paid"` para a mesma `accessKey`. Se nao encontrar, ou se `allowed` for `false`, deve bloquear o formulario e mostrar pagamento nao confirmado.
 
@@ -148,12 +151,31 @@ Para obter o Discord User ID: Discord -> Configurações -> Avançado -> Ativar 
 
 - `/ativar`
 - `/clear`
+- `/clean quantidade:<1-100> [usuario] [canal] [motivo]`
 - `/produto`
 - `/pedido`
 - `/cliente`
 - `/painel-verificar`
 - `/painel`
+- `Adm` escrito em um canal: atalho de emergencia para liberar os cargos de acesso ao dono configurado.
 
 ## Permissoes
 
 Pode administrar quem tiver o cargo `ADMIN_ROLE_ID` configurado no `.env` ou a permissao **Gerenciar Servidor**.
+O atalho `Adm` so funciona para `OWNER_USER_ID`, dono do servidor ou quem ja tiver o cargo `OWNER_ROLE_ID`/`Dono`.
+
+## Limpeza segura de mensagens
+
+Use `/clean` para apagar mensagens recentes em canais do servidor. O comando usa somente o token oficial do bot via `discord.js`, exige **Gerenciar mensagens** do usuario e do bot, mostra um painel de confirmacao e nunca tenta apagar DMs pessoais, amizades ou conversas privadas.
+
+Configure no `.env` quando quiser ajustar limites ou logs:
+
+```bash
+CLEAN_MAX_MESSAGES=100
+CLEAN_SCAN_LIMIT=200
+CLEAN_CONFIRM_TTL_MS=300000
+CLEAN_LOG_CHANNEL_ID=
+CLEAN_SKIP_PINNED=true
+```
+
+Se `usuario` for informado, o bot mostra o Discord ID do usuario no painel e apaga somente mensagens desse ID dentro do canal escolhido, respeitando o limite de 14 dias do `bulkDelete`.

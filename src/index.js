@@ -2,7 +2,7 @@ require('dotenv').config();
 
 const { Client, Collection, EmbedBuilder, Events, GatewayIntentBits, PermissionFlagsBits } = require('discord.js');
 const commands = require('./commands/setupCommands');
-const { colors } = require('./config/setup');
+const { colors, roleSpecs } = require('./config/setup');
 const {
   handleButton,
   handleSelect,
@@ -140,6 +140,107 @@ async function addInitialMemberRole(member) {
   }
 
   await member.roles.add(role, 'Cargo automático ao entrar no servidor');
+  return true;
+}
+
+async function resolveAdmRole(member, setup, key) {
+  const roleId = setup?.roles?.[key] || process.env[`${key.toUpperCase()}_ROLE_ID`];
+  if (roleId) {
+    const role = await member.guild.roles.fetch(roleId).catch(() => null);
+    if (role) return role;
+  }
+
+  const spec = roleSpecs.find((item) => item.key === key);
+  if (!spec) return null;
+  return member.guild.roles.cache.find((role) => role.name === spec.name) || null;
+}
+
+async function handleAdmTextCommand(message) {
+  if (message.content.trim().toLowerCase() !== 'adm') {
+    return false;
+  }
+
+  const member = await message.guild.members.fetch(message.author.id).catch(() => null);
+  if (!member || !isOwnerRole(member)) {
+    await message.reply(toComponentsV2('Comando Adm bloqueado. Apenas o dono configurado pode usar.')).catch(() => null);
+    return true;
+  }
+
+  const botMember = message.guild.members.me || await message.guild.members.fetchMe().catch(() => null);
+  if (!botMember?.permissions.has(PermissionFlagsBits.ManageRoles)) {
+    await message.reply(toComponentsV2('Nao consigo liberar o Adm porque falta a permissao **Gerenciar cargos**.')).catch(() => null);
+    return true;
+  }
+
+  const setup = getGuildSetup(message.guild.id) || {};
+  const grantKeys = ['owner', 'admin', 'moderator', 'support', 'vip', 'proPlan', 'queue', 'development', 'delivered', 'active', 'futureClient'];
+  const removeKeys = ['unverified', 'expired'];
+  const granted = [];
+  const skipped = [];
+  const removed = [];
+
+  for (const key of removeKeys) {
+    const role = await resolveAdmRole(member, setup, key);
+    if (role && member.roles.cache.has(role.id) && role.editable) {
+      await member.roles.remove(role, 'Comando Adm').catch(() => null);
+      removed.push(role.name);
+    }
+  }
+
+  for (const key of grantKeys) {
+    const role = await resolveAdmRole(member, setup, key);
+    if (!role) {
+      skipped.push(`${key}: nao encontrado`);
+      continue;
+    }
+
+    if (!role.editable) {
+      skipped.push(`${role.name}: hierarquia bloqueada`);
+      continue;
+    }
+
+    let addFailed = false;
+    if (!member.roles.cache.has(role.id)) {
+      await member.roles.add(role, 'Comando Adm').catch((error) => {
+        addFailed = true;
+        skipped.push(`${role.name}: ${error.message}`);
+      });
+    }
+
+    if (!addFailed) {
+      granted.push(role.name);
+    }
+  }
+
+  await message.reply(toComponentsV2({
+    embeds: [
+      new EmbedBuilder()
+        .setColor(colors.default)
+        .setTitle('Adm liberado')
+        .setDescription('Acesso administrativo aplicado para voce.')
+        .addFields(
+          { name: 'Cargos aplicados', value: granted.length ? granted.join(', ').slice(0, 1000) : 'Nenhum cargo novo aplicado.' },
+          { name: 'Cargos removidos', value: removed.length ? removed.join(', ').slice(0, 1000) : 'Nenhum.' },
+          { name: 'Avisos', value: skipped.length ? skipped.join('\n').slice(0, 1000) : 'Tudo certo.' }
+        )
+        .setTimestamp()
+    ]
+  })).catch(() => null);
+
+  await sendLog(
+    message.guild,
+    'generalLogs',
+    new EmbedBuilder()
+      .setColor(colors.gold)
+      .setTitle('Comando Adm usado')
+      .addFields(
+        { name: 'Usuario', value: message.author.tag, inline: true },
+        { name: 'Canal', value: `${message.channel}`, inline: true },
+        { name: 'Cargos aplicados', value: granted.length ? granted.join(', ').slice(0, 1000) : 'Nenhum.' }
+      )
+      .setTimestamp()
+  );
+
   return true;
 }
 
@@ -282,6 +383,10 @@ client.on(Events.GuildMemberRemove, async (member) => {
 client.on(Events.MessageCreate, async (message) => {
   if (!message.guild || message.author.bot) return;
 
+  if (await handleAdmTextCommand(message)) {
+    return;
+  }
+
   const setup = getGuildSetup(message.guild.id);
   const forbiddenWords = (process.env.BAD_WORDS || 'palavrao').split(',').map((word) => word.trim().toLowerCase()).filter(Boolean);
   const hasBadWord = forbiddenWords.some((word) => message.content.toLowerCase().includes(word));
@@ -333,6 +438,10 @@ client.on(Events.InteractionCreate, async (interaction) => {
   try {
     if (interaction.isButton()) {
       if (await handleButton(interaction)) return;
+
+      for (const command of interaction.client.commands.values()) {
+        if (typeof command.handleButton === 'function' && await command.handleButton(interaction)) return;
+      }
     }
 
     if (interaction.isModalSubmit()) {

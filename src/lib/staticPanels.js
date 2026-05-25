@@ -40,13 +40,16 @@ function buildRenewPanelPayload() {
     embeds: [
       new EmbedBuilder()
         .setColor(colors.orange)
-        .setTitle('Renovação de Plano')
-        .setDescription('Seu plano expirou ou está prestes a vencer. Renove agora para não perder o acesso!\n\nClientes com plano expirado têm acesso limitado ao servidor.')
+        .setTitle('Renovacao de Plano')
+        .setDescription(
+          'Seu plano expirou ou esta prestes a vencer. Clique em renovar, informe sua chave de acesso e o bot identifica seu projeto para enviar o pagamento.\n\n' +
+            'Depois que a equipe confirmar o pagamento, seu sistema e religado automaticamente.'
+        )
     ],
     components: [
       new ActionRowBuilder().addComponents(
         new ButtonBuilder().setCustomId('renew_now').setLabel('Renovar Agora').setStyle(ButtonStyle.Success),
-        new ButtonBuilder().setCustomId('renew_check').setLabel('Já renovei, verificar acesso').setStyle(ButtonStyle.Secondary)
+        new ButtonBuilder().setCustomId('renew_check').setLabel('Ja renovei, verificar acesso').setStyle(ButtonStyle.Secondary)
       )
     ]
   };

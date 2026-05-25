@@ -3,6 +3,7 @@ const ativar = require('./ativar');
 const produto = require('./produto');
 const pedido = require('./pedido');
 const cliente = require('./cliente');
+const clean = require('./clear');
 const { colors, staffRoleKeys } = require('../config/setup');
 const { privateReply } = require('../lib/replies');
 const { isStaff } = require('../lib/permissions');
@@ -494,6 +495,7 @@ const commands = [
   produto,
   pedido,
   cliente,
+  clean,
   {
     data: new SlashCommandBuilder()
       .setName('clear')

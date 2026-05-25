@@ -72,6 +72,7 @@ const { buildPromotionEmbed, getBoostDiscountPercent, getPlanPricing } = require
 const {
   createFivemFacPanelToken,
   deleteHostingRegistrationPermission,
+  notifyHostingBotRestore,
   notifyHostingBotShutdown,
   saveHostingRegistrationPermission
 } = require('../services/hostingBotNotifier');
@@ -615,6 +616,187 @@ function resolvePurchasePaymentMode(settings) {
   }
 
   return { mode: null, selectedMode };
+}
+
+function isRenewalTicketType(type) {
+  return ['renew_now', 'renew_check'].includes(type);
+}
+
+function getRenewalAmount(clientRecord = {}, settings = {}) {
+  const prices = settings.prices || {};
+  const plan = planValueFromType(clientRecord.plan);
+  const amount = plan === 'mensal'
+    ? Number(prices.monthly || prices.hosting || 0)
+    : Number(prices.hosting || prices.monthly || 0);
+
+  return Number.isFinite(amount) && amount > 0 ? amount : 0;
+}
+
+function buildRenewAccessKeyModal(mode = 'start') {
+  const modal = new ModalBuilder()
+    .setCustomId(`renew_access_submit:${mode}`)
+    .setTitle(mode === 'check' ? 'Verificar renovacao' : 'Renovar plano');
+
+  modal.addComponents(
+    new ActionRowBuilder().addComponents(
+      new TextInputBuilder()
+        .setCustomId('accessKey')
+        .setLabel('Sua chave de acesso')
+        .setStyle(TextInputStyle.Short)
+        .setRequired(true)
+        .setMinLength(4)
+        .setMaxLength(100)
+        .setPlaceholder('Ex: orvitek-meu-projeto')
+    )
+  );
+
+  return modal;
+}
+
+function buildRenewalPaymentDataModal(queueEntry = {}) {
+  const modal = new ModalBuilder()
+    .setCustomId('renew_payment_data_submit')
+    .setTitle('Dados do pagamento');
+
+  modal.addComponents(
+    new ActionRowBuilder().addComponents(
+      new TextInputBuilder()
+        .setCustomId('fullName')
+        .setLabel('Nome completo')
+        .setStyle(TextInputStyle.Short)
+        .setValue(String(queueEntry.paymentFullName || '').slice(0, 100))
+        .setRequired(true)
+    ),
+    new ActionRowBuilder().addComponents(
+      new TextInputBuilder()
+        .setCustomId('cpf')
+        .setLabel('CPF ou CNPJ')
+        .setStyle(TextInputStyle.Short)
+        .setValue(String(queueEntry.paymentCpf || '').slice(0, 30))
+        .setRequired(true)
+    ),
+    new ActionRowBuilder().addComponents(
+      new TextInputBuilder()
+        .setCustomId('email')
+        .setLabel('E-mail')
+        .setStyle(TextInputStyle.Short)
+        .setValue(String(queueEntry.paymentEmail || '').slice(0, 100))
+        .setRequired(true)
+    ),
+    new ActionRowBuilder().addComponents(
+      new TextInputBuilder()
+        .setCustomId('phoneAndPayment')
+        .setLabel('WhatsApp e contato')
+        .setStyle(TextInputStyle.Short)
+        .setValue(String(queueEntry.paymentPhoneAndPayment || '').slice(0, 100))
+        .setRequired(true)
+    )
+  );
+
+  return modal;
+}
+
+function findOriginalClientQueueEntry(guildId, userId, clientRecord = {}, excludeChannelId = null) {
+  const entries = listQueueEntries(guildId, userId)
+    .filter((entry) => entry.channelId !== excludeChannelId)
+    .filter((entry) => !String(entry.status || '').startsWith('renewal_'));
+
+  return entries.find((entry) => entry.channelId === clientRecord.paymentTicketChannelId)
+    || entries.find((entry) => entry.projectChannelId && entry.projectChannelId === clientRecord.projectChannelId)
+    || entries.find((entry) => isBlockingContractRecord(entry))
+    || entries[0]
+    || null;
+}
+
+function buildRenewalPaymentContract(guildId, channelId, ticket, clientRecord = {}, queueEntry = {}) {
+  const originalEntry = findOriginalClientQueueEntry(guildId, clientRecord.userId || ticket?.ownerId, clientRecord, channelId);
+  const originalContract = originalEntry?.channelId ? getContract(originalEntry.channelId) : null;
+  const projectName = clientRecord.projectName || queueEntry.projectName || originalContract?.projectName || originalEntry?.projectName || 'seu projeto';
+
+  return {
+    id: queueEntry.contractId || originalContract?.id || `renewal-${channelId}`,
+    guildId,
+    channelId,
+    userId: clientRecord.userId || ticket?.ownerId,
+    userTag: clientRecord.userTag || ticket?.ownerTag || null,
+    planType: 'renewal',
+    fullName:
+      queueEntry.paymentFullName ||
+      clientRecord.paymentFullName ||
+      originalEntry?.paymentFullName ||
+      originalContract?.fullName ||
+      clientRecord.userTag ||
+      ticket?.ownerTag ||
+      'Cliente Orvitek',
+    cpf: queueEntry.paymentCpf || clientRecord.paymentCpf || originalEntry?.paymentCpf || originalContract?.cpf || '',
+    email: queueEntry.paymentEmail || clientRecord.paymentEmail || originalEntry?.paymentEmail || originalContract?.email || '',
+    phoneAndPayment:
+      queueEntry.paymentPhoneAndPayment ||
+      clientRecord.paymentPhoneAndPayment ||
+      originalEntry?.paymentPhoneAndPayment ||
+      originalContract?.phoneAndPayment ||
+      '',
+    projectName
+  };
+}
+
+function buildRenewalIntroPanel(clientRecord = {}, amount = 0, paymentMode = null) {
+  return {
+    embeds: [
+      new EmbedBuilder()
+        .setColor(colors.gold)
+        .setTitle('Projeto identificado para renovacao')
+        .setDescription(
+          `Encontrei o projeto **${clientRecord.projectName || 'seu projeto'}** pela chave de acesso.\n\n` +
+            'Agora siga o pagamento abaixo. Quando a equipe confirmar, o sistema sera religado.'
+        )
+        .addFields(
+          { name: 'Cliente', value: clientRecord.userTag || `<@${clientRecord.userId}>`, inline: true },
+          { name: 'Projeto', value: clientRecord.projectName || 'nao informado', inline: true },
+          { name: 'Valor da renovacao', value: brl(amount), inline: true },
+          { name: 'Metodo', value: paymentMode ? paymentModeLabel(paymentMode) : 'Aguardando configuracao', inline: true }
+        )
+        .setTimestamp()
+    ]
+  };
+}
+
+function buildRenewalNeedPaymentDataPanel(clientRecord = {}, amount = 0) {
+  return {
+    embeds: [
+      new EmbedBuilder()
+        .setColor(colors.gold)
+        .setTitle('Dados para gerar o Pix')
+        .setDescription(
+          `Projeto identificado: **${clientRecord.projectName || 'seu projeto'}**.\n\n` +
+            'Para gerar Pix PagBank, informe os dados do pagador. Depois disso o bot envia o metodo de pagamento neste ticket.'
+        )
+        .addFields(
+          { name: 'Valor da renovacao', value: brl(amount), inline: true },
+          { name: 'Status', value: 'Aguardando dados do pagador', inline: true }
+        )
+        .setTimestamp()
+    ],
+    components: [
+      new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId('renew_payment_data_start').setLabel('Informar dados').setStyle(ButtonStyle.Success)
+      )
+    ]
+  };
+}
+
+function buildRenewalPaymentActions(provider = 'pagbank') {
+  const buttons = [];
+  if (provider === 'pagbank') {
+    buttons.push(new ButtonBuilder().setCustomId('renew_payment_check').setLabel('Verificar PagBank').setStyle(ButtonStyle.Success));
+  }
+
+  buttons.push(
+    new ButtonBuilder().setCustomId('renew_payment_approve').setLabel('Confirmar pagamento').setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId('renew_payment_reject').setLabel('Recusar pagamento').setStyle(ButtonStyle.Danger)
+  );
+
+  return [new ActionRowBuilder().addComponents(...buttons)];
 }
 
 function truncatePixCode(value) {
@@ -2439,6 +2621,7 @@ async function restoreHostingAccess(guild, clientRecord, options = {}) {
   const dueAt = getNextHostingDueDate();
   const cycle = getHostingCycleKey(dueAt);
   upsertClient(guild.id, clientRecord.userId, {
+    status: 'active',
     hostingStatus: 'current',
     accessGranted: true,
     hostingCycle: cycle,
@@ -2449,8 +2632,19 @@ async function restoreHostingAccess(guild, clientRecord, options = {}) {
     hostingPaidAt: new Date().toISOString(),
     hostingPaidBy: options.byUserId || null
   });
-  await syncPaidHostingPermission(guild, {
+  const updatedRecord = {
     ...clientRecord,
+    status: 'active',
+    hostingStatus: 'current',
+    accessGranted: true,
+    hostingCycle: cycle,
+    hostingDueAt: dueAt.toISOString(),
+    hostingGraceUntil: getHostingGraceDeadline(dueAt).toISOString(),
+    hostingReminderCycle: null,
+    hostingPaymentStatus: 'paid'
+  };
+  await syncPaidHostingPermission(guild, {
+    ...updatedRecord,
     hostingStatus: 'current',
     hostingPaymentStatus: 'paid',
     hostingDueAt: dueAt.toISOString(),
@@ -2459,6 +2653,28 @@ async function restoreHostingAccess(guild, clientRecord, options = {}) {
     force: true,
     reason: 'Hospedagem paga'
   }).catch(() => null);
+
+  await notifyHostingBotRestore(guild, updatedRecord, {
+    byUserId: options.byUserId || null,
+    reason: options.reason || 'Pagamento de renovacao confirmado'
+  }).catch((error) => {
+    console.warn('Nao foi possivel avisar o bot de hospedagem para religar cliente:', {
+      userId: clientRecord.userId,
+      projectName: clientRecord.projectName,
+      error: error.message
+    });
+  });
+
+  const setup = resolveGuildSetup(guild) || {};
+  if (member) {
+    await removeConfiguredRole(member, setup, 'expired', 'Plano Expirado');
+    await removeConfiguredRole(member, setup, 'futureClient', 'Futuro Cliente');
+    await addConfiguredRole(member, setup, 'active', 'Cliente Ativo');
+    if (planValueFromType(clientRecord.plan) === 'premium') {
+      await addConfiguredRole(member, setup, 'proPlan', 'Plano Pro');
+      await addConfiguredRole(member, setup, 'vip', 'Cliente VIP');
+    }
+  }
 
   if (member?.user) {
     await sendDmPanel(
@@ -2779,6 +2995,568 @@ async function openTicket(interaction, setup, type, reason = null) {
   }
 
   await interaction.reply(privateReply(`Ticket criado: ${channel}`));
+}
+
+async function sendRenewalPaymentMethod({ guild, channel, ticket, clientRecord, member, settings, requestedByUser }) {
+  const queueEntry = getQueueEntry(channel.id) || {};
+  const amount = getRenewalAmount(clientRecord, settings);
+  const resolvedPayment = resolvePurchasePaymentMode(settings);
+  const paymentMode = resolvedPayment.mode;
+  const paymentSettings = {
+    ...settings,
+    payment: {
+      ...(settings.payment || {}),
+      mode: paymentMode || settings.payment?.mode || 'pagbank'
+    }
+  };
+  const contract = buildRenewalPaymentContract(guild.id, channel.id, ticket, clientRecord, queueEntry);
+
+  if (!amount) {
+    await channel.send(toComponentsV2('Valor da renovacao nao configurado. Ajuste o valor de hospedagem/mensal no painel do sistema.'));
+    return { ok: false, reason: 'Valor da renovacao nao configurado.' };
+  }
+
+  if (!paymentMode) {
+    await channel.send(toComponentsV2('Nenhum metodo de pagamento esta configurado. Configure PagBank, QR Code ou chave Pix no painel do sistema.'));
+    return { ok: false, reason: 'Nenhum metodo de pagamento configurado.' };
+  }
+
+  if (paymentMode === 'pix_key' || paymentMode === 'qr_code') {
+    const payment = upsertPayment(channel.id, {
+      provider: paymentMode,
+      referenceId: `renewal-manual-${guild.id}-${channel.id}`,
+      orderId: null,
+      amountCents: Math.round(amount * 100),
+      status: 'awaiting_manual_approval',
+      guildId: guild.id,
+      userId: ticket.ownerId,
+      userTag: ticket.ownerTag,
+      contractId: contract.id,
+      projectName: contract.projectName,
+      plan: 'renewal',
+      createdAt: new Date().toISOString()
+    });
+
+    upsertQueueEntry(channel.id, {
+      guildId: guild.id,
+      ownerId: ticket.ownerId,
+      ownerTag: ticket.ownerTag,
+      plan: clientRecord.plan || queueEntry.plan || null,
+      status: 'renewal_awaiting_manual_payment',
+      renewalAccessKey: clientRecord.accessKey,
+      accessKey: clientRecord.accessKey,
+      projectName: contract.projectName,
+      projectChannelId: clientRecord.projectChannelId || null,
+      selectedPaymentAmount: amount,
+      paidPrice: amount,
+      entryPrice: amount,
+      paymentProvider: paymentMode,
+      paymentStatus: payment.status,
+      paymentAmountCents: payment.amountCents,
+      renewalRequestedAt: queueEntry.renewalRequestedAt || new Date().toISOString()
+    });
+
+    await channel.send(toComponentsV2({
+      content:
+        `<@${ticket.ownerId}>, metodo de pagamento enviado para renovar **${contract.projectName}**.` +
+        (resolvedPayment.fallback ? `\nModo selecionado indisponivel; usei **${paymentModeLabel(paymentMode)}**.` : ''),
+      embeds: [buildManualPixPaymentEmbed(paymentSettings, contract, amount)],
+      components: buildRenewalPaymentActions(paymentMode)
+    }));
+    return { ok: true, payment };
+  }
+
+  if (!isPagBankConfigured()) {
+    await channel.send(toComponentsV2('O PagBank ainda nao esta configurado. Defina PAGBANK_TOKEN no .env ou selecione QR Code/chave Pix no painel.'));
+    return { ok: false, reason: 'PagBank nao configurado.' };
+  }
+
+  try {
+    validatePagBankCustomer(contract, member?.user || requestedByUser);
+  } catch (error) {
+    await channel.send(toComponentsV2(buildRenewalNeedPaymentDataPanel(clientRecord, amount)));
+    return { ok: false, needsPaymentData: true, reason: error.message };
+  }
+
+  let payment = getPayment(channel.id);
+  const reusedPayment = paymentIsReusable(payment);
+
+  try {
+    if (!reusedPayment) {
+      const referenceId = buildPagBankReference(guild.id, channel.id);
+      const created = await createPixOrder({
+        contract,
+        discordUser: member?.user || requestedByUser,
+        amount,
+        description: `Renovacao ${contract.projectName || 'Orvitek'}`,
+        referenceId
+      });
+      payment = upsertPayment(channel.id, {
+        ...created.payment,
+        guildId: guild.id,
+        userId: ticket.ownerId,
+        userTag: ticket.ownerTag,
+        contractId: contract.id,
+        projectName: contract.projectName,
+        plan: 'renewal'
+      });
+    }
+
+    payment = await refreshPagBankPaymentDetails(payment, channel.id);
+    if (!isPixCopyPasteText(payment?.qrCodeText)) {
+      throw new Error('O PagBank criou o pedido, mas nao retornou um Pix copia e cola valido. Verifique a chave Pix ativa na conta PagBank.');
+    }
+  } catch (error) {
+    await channel.send(toComponentsV2(`Nao consegui gerar o Pix de renovacao pelo PagBank: ${error.message}`));
+    return { ok: false, reason: error.message };
+  }
+
+  upsertQueueEntry(channel.id, {
+    guildId: guild.id,
+    ownerId: ticket.ownerId,
+    ownerTag: ticket.ownerTag,
+    plan: clientRecord.plan || queueEntry.plan || null,
+    status: 'renewal_awaiting_pagbank_payment',
+    renewalAccessKey: clientRecord.accessKey,
+    accessKey: clientRecord.accessKey,
+    projectName: contract.projectName,
+    projectChannelId: clientRecord.projectChannelId || null,
+    selectedPaymentAmount: amount,
+    paidPrice: amount,
+    entryPrice: amount,
+    paymentProvider: 'pagbank',
+    paymentOrderId: payment.orderId,
+    paymentStatus: payment.status,
+    paymentAmountCents: payment.amountCents,
+    renewalRequestedAt: queueEntry.renewalRequestedAt || new Date().toISOString()
+  });
+
+  await channel.send(toComponentsV2({
+    content: `<@${ticket.ownerId}>, Pix PagBank gerado para renovar **${contract.projectName}**.`,
+    embeds: [buildPagBankPaymentEmbed(payment, contract)],
+    components: buildRenewalPaymentActions('pagbank')
+  }));
+  return { ok: true, payment };
+}
+
+async function openRenewalTicketFromAccessKey(interaction, setup, clientRecord, accessKey, mode = 'start') {
+  const settings = getSystemSettings(interaction.guild.id);
+  const amount = getRenewalAmount(clientRecord, settings);
+  const resolvedPayment = resolvePurchasePaymentMode(settings);
+  const renewalOwnerId = clientRecord.userId || interaction.user.id;
+  const renewalOwnerTag = clientRecord.userTag || interaction.user.tag;
+  const username = channelSafe((renewalOwnerTag.split('#')[0] || interaction.user.username));
+  const existing = interaction.guild.channels.cache.find(
+    (channel) => {
+      if (
+        channel.type !== ChannelType.GuildText ||
+        !channel.name.includes(username) ||
+        (!channel.name.startsWith('renovacao-') && !channel.name.startsWith('suporte-renovacao-'))
+      ) {
+        return false;
+      }
+
+      const ticketRecord = getTicketByChannel(channel.id);
+      return !ticketRecord || !['closed', 'renewal_paid'].includes(ticketRecord.status);
+    }
+  );
+
+  if (existing) {
+    await interaction.editReply(toComponentsV2(`Voce ja tem uma renovacao aberta: ${existing}`));
+    return true;
+  }
+
+  const supportCategoryId = setup.categories?.supportCategory || null;
+  const everyoneRoleId = interaction.guild.roles.everyone?.id || interaction.guild.id;
+  const channel = await interaction.guild.channels.create({
+    name: `renovacao-${username}`.slice(0, 90),
+    type: ChannelType.GuildText,
+    parent: supportCategoryId || null,
+    permissionOverwrites: [
+      { id: everyoneRoleId, deny: [PermissionFlagsBits.ViewChannel] },
+      {
+        id: renewalOwnerId,
+        allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory]
+      },
+      ...staffOverwrites(interaction.guild, setup)
+    ],
+    reason: `Renovacao aberta por ${interaction.user.tag}`
+  });
+
+  const ticket = createTicket({
+    guildId: interaction.guild.id,
+    channelId: channel.id,
+    ownerId: renewalOwnerId,
+    ownerTag: renewalOwnerTag,
+    type: 'renew_now'
+  });
+
+  const originalEntry = findOriginalClientQueueEntry(interaction.guild.id, clientRecord.userId, clientRecord, channel.id);
+  const originalContract = originalEntry?.channelId ? getContract(originalEntry.channelId) : null;
+  const queueEntry = upsertQueueEntry(channel.id, {
+    guildId: interaction.guild.id,
+    ownerId: renewalOwnerId,
+    ownerTag: renewalOwnerTag,
+    plan: clientRecord.plan || originalEntry?.plan || null,
+    status: mode === 'check' ? 'renewal_check_requested' : 'renewal_identified',
+    renewalAccessKey: accessKey,
+    accessKey: clientRecord.accessKey,
+    projectName: clientRecord.projectName || originalEntry?.projectName || originalContract?.projectName || null,
+    projectChannelId: clientRecord.projectChannelId || originalEntry?.projectChannelId || null,
+    paymentFullName: clientRecord.paymentFullName || originalEntry?.paymentFullName || originalContract?.fullName || null,
+    paymentCpf: clientRecord.paymentCpf || originalEntry?.paymentCpf || originalContract?.cpf || null,
+    paymentEmail: clientRecord.paymentEmail || originalEntry?.paymentEmail || originalContract?.email || null,
+    paymentPhoneAndPayment: clientRecord.paymentPhoneAndPayment || originalEntry?.paymentPhoneAndPayment || originalContract?.phoneAndPayment || null,
+    selectedPaymentAmount: amount,
+    paidPrice: amount,
+    entryPrice: amount,
+    renewalRequestedAt: new Date().toISOString()
+  });
+
+  const mentions = [`<@${renewalOwnerId}>`];
+  if (TICKET_ALERT_ROLE_ID) mentions.push(`<@&${TICKET_ALERT_ROLE_ID}>`);
+
+  await channel.send(toComponentsV2({
+    content: mentions.join(' '),
+    allowedMentions: {
+      users: [renewalOwnerId],
+      roles: TICKET_ALERT_ROLE_ID ? [TICKET_ALERT_ROLE_ID] : []
+    },
+    embeds: [
+      new EmbedBuilder()
+        .setColor(colors.blue)
+        .setTitle(`Renovacao #${ticket.id}`)
+        .setDescription(
+          `${getTimeGreeting()}, <@${renewalOwnerId}>.\n\n` +
+            'Recebemos sua chave de acesso e identificamos o projeto. A equipe acompanha este ticket ate a confirmacao do pagamento.'
+        )
+        .addFields(
+          { name: 'Projeto', value: queueEntry.projectName || clientRecord.projectName || 'nao informado', inline: true },
+          { name: 'Chave', value: `\`${clientRecord.accessKey}\``, inline: true },
+          { name: 'Status atual', value: clientRecord.hostingStatus || clientRecord.status || 'nao informado', inline: true },
+          { name: 'Valor da renovacao', value: brl(amount), inline: true }
+        )
+        .setTimestamp()
+    ],
+    components: buildTicketActions('renew_now')
+  }));
+
+  await channel.send(toComponentsV2(buildRenewalIntroPanel(clientRecord, amount, resolvedPayment.mode))).catch(() => null);
+  const member = await interaction.guild.members.fetch(renewalOwnerId).catch(() => null);
+  await sendRenewalPaymentMethod({
+    guild: interaction.guild,
+    channel,
+    ticket,
+    clientRecord,
+    member,
+    settings,
+    requestedByUser: interaction.user
+  });
+
+  await interaction.editReply(toComponentsV2(`Renovacao criada: ${channel}`));
+  return true;
+}
+
+async function handleRenewButton(interaction) {
+  const mode = interaction.customId === 'renew_check' ? 'check' : 'start';
+  await interaction.showModal(buildRenewAccessKeyModal(mode));
+  return true;
+}
+
+async function handleRenewAccessSubmit(interaction, setup) {
+  await interaction.deferReply({ flags: 64 });
+
+  const [, mode = 'start'] = interaction.customId.split(':');
+  const accessKey = interaction.fields.getTextInputValue('accessKey').trim();
+  const clientRecord = findClientByAccessKey(interaction.guild.id, accessKey);
+
+  if (!clientRecord) {
+    await interaction.editReply(toComponentsV2('Nao encontrei nenhum projeto com essa chave de acesso. Confira a chave e tente novamente.'));
+    return true;
+  }
+
+  const canManage = isOwnerRole(interaction.member) || isStaff(interaction.member);
+  if (clientRecord.userId !== interaction.user.id && !canManage) {
+    await interaction.editReply(toComponentsV2('Essa chave pertence a outro cliente. Use a chave do seu proprio projeto.'));
+    return true;
+  }
+
+  if (mode === 'check' && clientRecord.hostingStatus === 'current' && clientRecord.hostingPaymentStatus === 'paid') {
+    await interaction.editReply(toComponentsV2(
+      `Seu projeto **${clientRecord.projectName || 'seu projeto'}** ja esta ativo. Proximo vencimento: ${clientRecord.hostingDueAt ? `<t:${Math.floor(new Date(clientRecord.hostingDueAt).getTime() / 1000)}:D>` : 'nao informado'}.`
+    ));
+    return true;
+  }
+
+  await openRenewalTicketFromAccessKey(interaction, setup, clientRecord, accessKey, mode);
+  return true;
+}
+
+async function getRenewalTicketContext(interaction) {
+  const ticket = getTicketByChannel(interaction.channelId);
+  if (!ticket || !isRenewalTicketType(ticket.type)) {
+    await interaction.reply(privateReply('Este canal nao e um atendimento de renovacao.'));
+    return null;
+  }
+
+  const queueEntry = getQueueEntry(interaction.channelId) || {};
+  const clientRecord = findClientByAccessKey(interaction.guild.id, queueEntry.renewalAccessKey || queueEntry.accessKey)
+    || getClient(interaction.guild.id, ticket.ownerId);
+
+  if (!clientRecord) {
+    await interaction.reply(privateReply('Nao encontrei o cliente desta renovacao.'));
+    return null;
+  }
+
+  return { ticket, queueEntry, clientRecord };
+}
+
+async function confirmRenewalPayment(interaction, setup, context, options = {}) {
+  const { ticket, queueEntry, clientRecord } = context;
+  const paidAt = options.paidAt || new Date().toISOString();
+  const payment = getPayment(interaction.channelId);
+
+  if (payment) {
+    upsertPayment(interaction.channelId, {
+      status: 'paid',
+      paidAt,
+      approvedManuallyBy: options.manual ? interaction.user.id : payment.approvedManuallyBy || null,
+      chargeId: options.chargeId || payment.chargeId || null
+    });
+  }
+
+  const latestClientRecord = findClientByAccessKey(interaction.guild.id, clientRecord.accessKey) || clientRecord;
+  const restoreResult = await restoreHostingAccess(interaction.guild, latestClientRecord, { byUserId: interaction.user.id });
+  if (!restoreResult.ok) {
+    await interaction.editReply(toComponentsV2(restoreResult.reason));
+    return true;
+  }
+
+  updateTicket(interaction.channelId, {
+    status: 'renewal_paid',
+    closedAt: null,
+    renewedAt: paidAt,
+    renewedBy: interaction.user.id
+  });
+
+  upsertQueueEntry(interaction.channelId, {
+    status: 'renewal_restored',
+    paymentStatus: 'paid',
+    paymentPaidAt: paidAt,
+    paymentConfirmedAt: paidAt,
+    paymentConfirmedBy: interaction.user.id,
+    hostingStatus: 'current',
+    hostingPaymentStatus: 'paid',
+    hostingDueAt: restoreResult.dueAt.toISOString(),
+    hostingGraceUntil: getHostingGraceDeadline(restoreResult.dueAt).toISOString()
+  });
+
+  await interaction.channel.send(toComponentsV2({
+    embeds: [
+      new EmbedBuilder()
+        .setColor(colors.default)
+        .setTitle('Renovacao confirmada')
+        .setDescription(`Pagamento confirmado. O projeto **${latestClientRecord.projectName || queueEntry.projectName || 'seu projeto'}** foi religado.`)
+        .addFields(
+          { name: 'Cliente', value: `<@${ticket.ownerId}>`, inline: true },
+          { name: 'Proximo vencimento', value: `<t:${Math.floor(restoreResult.dueAt.getTime() / 1000)}:D>`, inline: true }
+        )
+        .setTimestamp()
+    ]
+  })).catch(() => null);
+
+  await interaction.editReply(toComponentsV2('Renovacao confirmada e sistema religado.'));
+  await deleteActionPanel(interaction);
+  return true;
+}
+
+async function handleRenewalAction(interaction, setup) {
+  if (interaction.customId === 'renew_payment_data_start') {
+    const context = await getRenewalTicketContext(interaction);
+    if (!context) return true;
+
+    if (context.ticket.ownerId !== interaction.user.id && !isOwnerRole(interaction.member)) {
+      await interaction.reply(privateReply('Apenas o cliente desta renovacao pode informar os dados.'));
+      return true;
+    }
+
+    await interaction.showModal(buildRenewalPaymentDataModal(context.queueEntry));
+    return true;
+  }
+
+  const context = await getRenewalTicketContext(interaction);
+  if (!context) return true;
+
+  if (interaction.customId === 'renew_payment_check') {
+    const { ticket } = context;
+    const payment = getPayment(interaction.channelId);
+    if (payment && payment.provider !== 'pagbank') {
+      await interaction.reply(privateReply('Este pagamento e manual. Aguarde a equipe confirmar pelo botao **Confirmar pagamento**.'));
+      return true;
+    }
+
+    if (ticket.ownerId !== interaction.user.id && !isOwnerRole(interaction.member)) {
+      await interaction.reply(privateReply('Apenas o cliente desta renovacao ou o Dono pode verificar este pagamento.'));
+      return true;
+    }
+
+    if (!payment?.orderId) {
+      await interaction.reply(privateReply('Nenhum Pix PagBank foi gerado para esta renovacao ainda.'));
+      return true;
+    }
+
+    await interaction.deferReply({ flags: 64 });
+
+    let order;
+    try {
+      order = await consultOrder(payment.orderId);
+    } catch (error) {
+      await interaction.editReply(toComponentsV2(`Nao consegui consultar o PagBank: ${error.message}`));
+      return true;
+    }
+
+    const status = summarizeOrderStatus(order, payment.amountCents);
+    const refreshedPayment = await buildPixPaymentFromOrder(order, payment.amountCents, payment.referenceId || order.reference_id || null);
+    const updatedPayment = upsertPayment(interaction.channelId, {
+      ...refreshedPayment,
+      status: status.paid ? 'paid' : 'awaiting_payment',
+      rawStatus: status.status,
+      chargeId: status.chargeId || payment.chargeId || null,
+      paidAt: status.paidAt || payment.paidAt || null,
+      lastCheckedAt: new Date().toISOString()
+    });
+
+    upsertQueueEntry(interaction.channelId, {
+      paymentStatus: updatedPayment.status,
+      paymentProvider: 'pagbank',
+      paymentOrderId: payment.orderId,
+      paymentChargeId: updatedPayment.chargeId,
+      paymentPaidAt: updatedPayment.paidAt || null
+    });
+
+    if (!status.paid) {
+      await interaction.editReply(toComponentsV2(`Pagamento ainda nao confirmado pelo PagBank. Status atual: ${status.status}.`));
+      return true;
+    }
+
+    await confirmRenewalPayment(interaction, setup, context, {
+      paidAt: updatedPayment.paidAt || new Date().toISOString(),
+      chargeId: updatedPayment.chargeId
+    });
+    return true;
+  }
+
+  if (!isOwnerRole(interaction.member)) {
+    await interaction.reply(privateReply('Apenas quem tem o cargo Dono pode confirmar ou recusar renovacao.'));
+    return true;
+  }
+
+  if (interaction.customId === 'renew_payment_approve') {
+    await interaction.deferReply({ flags: 64 });
+    await confirmRenewalPayment(interaction, setup, context, { manual: true });
+    return true;
+  }
+
+  if (interaction.customId === 'renew_payment_reject') {
+    const rejectedAt = new Date().toISOString();
+    upsertPayment(interaction.channelId, {
+      status: 'rejected',
+      rejectedAt,
+      rejectedBy: interaction.user.id
+    });
+    upsertQueueEntry(interaction.channelId, {
+      status: 'renewal_payment_rejected',
+      paymentStatus: 'rejected',
+      paymentRejectedAt: rejectedAt,
+      paymentRejectedBy: interaction.user.id
+    });
+    await interaction.reply(toComponentsV2('Pagamento de renovacao recusado. O sistema continua bloqueado ate nova confirmacao.'));
+    await deleteActionPanel(interaction);
+    return true;
+  }
+
+  return false;
+}
+
+async function handleRenewalPaymentDataSubmit(interaction, setup) {
+  await interaction.deferReply({ flags: 64 });
+
+  const ticket = getTicketByChannel(interaction.channelId);
+  if (!ticket || !isRenewalTicketType(ticket.type)) {
+    await interaction.editReply(toComponentsV2('Este canal nao e um atendimento de renovacao.'));
+    return true;
+  }
+
+  if (ticket.ownerId !== interaction.user.id && !isOwnerRole(interaction.member)) {
+    await interaction.editReply(toComponentsV2('Apenas o cliente desta renovacao pode informar os dados.'));
+    return true;
+  }
+
+  const clientRecord = findClientByAccessKey(interaction.guild.id, getQueueEntry(interaction.channelId)?.renewalAccessKey)
+    || getClient(interaction.guild.id, ticket.ownerId);
+  if (!clientRecord) {
+    await interaction.editReply(toComponentsV2('Nao encontrei o cliente desta renovacao.'));
+    return true;
+  }
+
+  const settings = getSystemSettings(interaction.guild.id);
+  const amount = getRenewalAmount(clientRecord, settings);
+  const contractFields = {
+    fullName: interaction.fields.getTextInputValue('fullName'),
+    cpf: interaction.fields.getTextInputValue('cpf'),
+    email: interaction.fields.getTextInputValue('email'),
+    phoneAndPayment: interaction.fields.getTextInputValue('phoneAndPayment')
+  };
+
+  try {
+    validatePagBankCustomer({
+      ...contractFields,
+      projectName: clientRecord.projectName || 'seu projeto'
+    }, interaction.user);
+  } catch (error) {
+    await interaction.editReply(toComponentsV2(error.message));
+    return true;
+  }
+
+  const queueEntry = upsertQueueEntry(interaction.channelId, {
+    paymentFullName: contractFields.fullName,
+    paymentCpf: contractFields.cpf,
+    paymentEmail: contractFields.email,
+    paymentPhoneAndPayment: contractFields.phoneAndPayment,
+    selectedPaymentAmount: amount,
+    paidPrice: amount,
+    entryPrice: amount,
+    status: 'renewal_payment_data_ready',
+    paymentDataSavedAt: new Date().toISOString()
+  });
+
+  upsertClient(interaction.guild.id, ticket.ownerId, {
+    paymentFullName: contractFields.fullName,
+    paymentCpf: contractFields.cpf,
+    paymentEmail: contractFields.email,
+    paymentPhoneAndPayment: contractFields.phoneAndPayment
+  });
+
+  const member = await interaction.guild.members.fetch(ticket.ownerId).catch(() => null);
+  await sendRenewalPaymentMethod({
+    guild: interaction.guild,
+    channel: interaction.channel,
+    ticket,
+    clientRecord: {
+      ...clientRecord,
+      paymentFullName: contractFields.fullName,
+      paymentCpf: contractFields.cpf,
+      paymentEmail: contractFields.email,
+      paymentPhoneAndPayment: contractFields.phoneAndPayment
+    },
+    member,
+    settings,
+    requestedByUser: interaction.user
+  });
+
+  await interaction.editReply(toComponentsV2(`Dados salvos. Enviei o metodo de pagamento para renovar **${queueEntry.projectName || clientRecord.projectName || 'seu projeto'}**.`));
+  await deleteActionPanel(interaction);
+  return true;
 }
 
 async function handleTicketAction(interaction, setup) {
@@ -5824,6 +6602,16 @@ async function handleButton(interaction) {
     return true;
   }
 
+  if (interaction.customId === 'renew_now' || interaction.customId === 'renew_check') {
+    await handleRenewButton(interaction);
+    return true;
+  }
+
+  if (interaction.customId.startsWith('renew_payment_')) {
+    await handleRenewalAction(interaction, setup);
+    return true;
+  }
+
   if (interaction.customId === 'verify_member' || interaction.customId === 'setup_verify') {
     await verifyMember(interaction, setup);
     return true;
@@ -6024,6 +6812,16 @@ async function handleModal(interaction) {
   const setup = resolveGuildSetup(interaction.guild);
   if (!setup) {
     await interaction.reply(privateReply('O servidor ainda não foi configurado com /ativar.'));
+    return true;
+  }
+
+  if (interaction.customId.startsWith('renew_access_submit:')) {
+    await handleRenewAccessSubmit(interaction, setup);
+    return true;
+  }
+
+  if (interaction.customId === 'renew_payment_data_submit') {
+    await handleRenewalPaymentDataSubmit(interaction, setup);
     return true;
   }
 

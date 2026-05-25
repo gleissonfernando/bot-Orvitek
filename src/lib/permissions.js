@@ -33,6 +33,18 @@ function isStaff(member) {
 }
 
 function isOwnerRole(member) {
+  if (!member) {
+    return false;
+  }
+
+  if (process.env.OWNER_USER_ID && member.id === process.env.OWNER_USER_ID) {
+    return true;
+  }
+
+  if (member.guild?.ownerId && member.id === member.guild.ownerId) {
+    return true;
+  }
+
   const configuredOwnerRoleId = process.env.OWNER_ROLE_ID;
 
   if (configuredOwnerRoleId) {

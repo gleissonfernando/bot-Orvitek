@@ -40,6 +40,20 @@ function getConfig() {
   };
 }
 
+function getRestoreConfig() {
+  const explicitEndpoint = (process.env.ORVITEK_HOSTING_BOT_RESTORE_URL || '').trim();
+  const baseUrl = getHostingApiBaseUrl();
+  const endpoint = explicitEndpoint || (baseUrl ? `${baseUrl}/api/orvitek/religar` : '');
+  const token = (process.env.ORVITEK_HOSTING_BOT_TOKEN || '').trim();
+  const timeoutMs = Number(process.env.ORVITEK_HOSTING_BOT_TIMEOUT_MS || DEFAULT_TIMEOUT_MS);
+
+  return {
+    endpoint,
+    token,
+    timeoutMs: Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : DEFAULT_TIMEOUT_MS
+  };
+}
+
 function getHostingApiBaseUrl() {
   return (process.env.HOSTING_API_URL || process.env.HOSTING_BOT_API_URL || '').trim().replace(/\/+$/, '');
 }
@@ -452,6 +466,102 @@ async function sendShutdownEventByHttp(payload) {
   }
 }
 
+async function sendRestoreEventByHttp(payload) {
+  if (!isHostingBotNotifierEnabled()) {
+    debugLog('POST de religamento nao enviado', {
+      reason: 'ORVITEK_HOSTING_BOT_ENABLED desativado',
+      event: payload.event,
+      eventId: payload.eventId,
+      userId: payload.client?.userId
+    });
+    return { ok: false, skipped: true, reason: 'ORVITEK_HOSTING_BOT_ENABLED desativado' };
+  }
+
+  const config = getRestoreConfig();
+  if (!config.endpoint) {
+    debugLog('POST de religamento nao enviado', {
+      reason: 'ORVITEK_HOSTING_BOT_RESTORE_URL/HOSTING_API_URL nao configurada',
+      event: payload.event,
+      eventId: payload.eventId,
+      userId: payload.client?.userId,
+      projectName: payload.hosting?.projectName,
+      accessKey: payload.hosting?.accessKey
+    });
+    return { ok: false, skipped: true, reason: 'endpoint de religamento nao configurado' };
+  }
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), config.timeoutMs);
+
+  try {
+    debugLog('Enviando POST de religamento para o bot de hospedagem', {
+      endpoint: config.endpoint,
+      event: payload.event,
+      eventId: payload.eventId,
+      userId: payload.client?.userId,
+      userTag: payload.client?.userTag,
+      projectName: payload.hosting?.projectName,
+      accessKey: payload.hosting?.accessKey,
+      action: payload.action?.type,
+      reason: payload.action?.reason
+    });
+
+    const response = await fetch(config.endpoint, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'User-Agent': 'Orvitek-Bots/1.0',
+        ...(config.token ? { Authorization: `Bearer ${config.token}` } : {})
+      },
+      body: JSON.stringify(payload),
+      signal: controller.signal
+    });
+
+    const responseText = await response.text().catch(() => '');
+    if (!response.ok) {
+      debugLog('Bot de hospedagem respondeu com erro no religamento', {
+        endpoint: config.endpoint,
+        eventId: payload.eventId,
+        status: response.status,
+        body: responseText.slice(0, 500)
+      });
+      return {
+        ok: false,
+        status: response.status,
+        body: responseText.slice(0, 500),
+        payload
+      };
+    }
+
+    debugLog('Bot de hospedagem respondeu OK no religamento', {
+      endpoint: config.endpoint,
+      eventId: payload.eventId,
+      status: response.status,
+      body: responseText.slice(0, 500)
+    });
+
+    return {
+      ok: true,
+      status: response.status,
+      body: responseText.slice(0, 500),
+      payload
+    };
+  } catch (error) {
+    debugLog('Falha ao religar no bot de hospedagem', {
+      endpoint: config.endpoint,
+      eventId: payload.eventId,
+      error: error.name === 'AbortError' ? 'timeout' : error.message
+    });
+    return {
+      ok: false,
+      error: error.name === 'AbortError' ? 'timeout' : error.message,
+      payload
+    };
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 async function notifyHostingBotShutdown(guild, clientRecord, options = {}) {
   if (!isHostingBotNotifierEnabled()) {
     debugLog('Comunicacao com bot de hospedagem ignorada', {
@@ -486,6 +596,61 @@ async function notifyHostingBotShutdown(guild, clientRecord, options = {}) {
   ]);
 
   debugLog('Resultado da comunicacao de desligamento com Orvitek Hospedagem', {
+    eventId: payload.eventId,
+    ok: database.ok || http.ok,
+    database,
+    http
+  });
+
+  return {
+    ok: database.ok || http.ok,
+    payload,
+    database,
+    http
+  };
+}
+
+async function notifyHostingBotRestore(guild, clientRecord, options = {}) {
+  if (!isHostingBotNotifierEnabled()) {
+    debugLog('Comunicacao de religamento ignorada', {
+      reason: 'ORVITEK_HOSTING_BOT_ENABLED desativado',
+      guildId: guild.id,
+      userId: clientRecord?.userId,
+      projectName: clientRecord?.projectName
+    });
+    return {
+      ok: false,
+      skipped: true,
+      reason: 'ORVITEK_HOSTING_BOT_ENABLED desativado'
+    };
+  }
+
+  const payload = buildShutdownPayload(guild, clientRecord, {
+    ...options,
+    event: options.event || 'hosting.payment_confirmed.restore',
+    actionType: options.actionType || 'restore_client_hosting',
+    eventIdSuffix: options.eventIdSuffix || `hosting-restore-${Date.now()}`,
+    reason: options.reason || 'Pagamento confirmado. Religando hospedagem.'
+  });
+
+  debugLog('Iniciando comunicacao de religamento com Orvitek Hospedagem', {
+    event: payload.event,
+    eventId: payload.eventId,
+    userId: payload.client?.userId,
+    projectName: payload.hosting?.projectName,
+    accessKey: payload.hosting?.accessKey,
+    action: payload.action?.type
+  });
+
+  const [database, http] = await Promise.all([
+    saveShutdownEventToDatabase(payload).catch((error) => ({
+      ok: false,
+      error: error.message
+    })),
+    sendRestoreEventByHttp(payload)
+  ]);
+
+  debugLog('Resultado da comunicacao de religamento com Orvitek Hospedagem', {
     eventId: payload.eventId,
     ok: database.ok || http.ok,
     database,
@@ -619,6 +784,7 @@ module.exports = {
   deleteHostingRegistrationPermission,
   isHostingBotNotifierEnabled,
   isHostingBotNotifierConfigured,
+  notifyHostingBotRestore,
   saveHostingRegistrationPermission,
   saveShutdownEventToDatabase,
   notifyHostingBotShutdown
