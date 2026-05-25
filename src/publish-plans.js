@@ -1,7 +1,7 @@
 require('dotenv').config();
 
 const { Client, Events, GatewayIntentBits } = require('discord.js');
-const { buildPlanSelectionPanelPayload } = require('./lib/planSelectionPanel');
+const { buildLifetimePlanPanelPayload, buildMonthlyPlanPanelPayload } = require('./lib/planSelectionPanel');
 const { getGuildSetup } = require('./lib/store');
 const { replacePanelMessage } = require('./lib/panelUtils');
 
@@ -13,20 +13,41 @@ const client = new Client({
   intents: [GatewayIntentBits.Guilds]
 });
 
+async function publishPanel(guild, channelId, payload, label) {
+  const channel = channelId
+    ? client.channels.cache.get(channelId) || await guild.channels.fetch(channelId).catch(() => null)
+    : null;
+
+  if (!channel?.isTextBased()) return false;
+
+  await replacePanelMessage(channel, payload);
+  console.log(`${label} publicado em #${channel.name}.`);
+  return true;
+}
+
 client.once(Events.ClientReady, async () => {
   const guild = await client.guilds.fetch(process.env.GUILD_ID);
   const setup = getGuildSetup(guild.id);
-  const CANAL_ID = process.env.CANAL_ID || process.env.PLAN_PANEL_CHANNEL_ID || setup?.channels?.plans;
-  const channel = CANAL_ID
-    ? client.channels.cache.get(CANAL_ID) || await guild.channels.fetch(CANAL_ID).catch(() => null)
-    : null;
+  const published = [];
 
-  if (!channel?.isTextBased()) {
-    throw new Error('Canal planos-e-precos não encontrado. Execute /ativar primeiro.');
+  published.push(await publishPanel(
+    guild,
+    process.env.MONTHLY_PLAN_CHANNEL_ID || setup?.channels?.plans,
+    buildMonthlyPlanPanelPayload(guild.id),
+    'Painel mensal'
+  ));
+
+  published.push(await publishPanel(
+    guild,
+    process.env.LIFETIME_PLAN_CHANNEL_ID || setup?.channels?.buyNow,
+    buildLifetimePlanPanelPayload(guild.id),
+    'Painel vitalicio'
+  ));
+
+  if (!published.some(Boolean)) {
+    throw new Error('Nenhum canal de painel encontrado. Execute /ativar primeiro ou configure MONTHLY_PLAN_CHANNEL_ID/LIFETIME_PLAN_CHANNEL_ID.');
   }
 
-  await replacePanelMessage(channel, buildPlanSelectionPanelPayload());
-  console.log(`Painel de planos publicado em #${channel.name}.`);
   client.destroy();
 });
 

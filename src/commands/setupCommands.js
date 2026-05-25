@@ -26,7 +26,10 @@ const {
   suppressPanelRestore
 } = require('../lib/interactions');
 const { buildPromotionEmbed } = require('../lib/plans');
-const { buildNoticePayload, buildPlanSelectionPanelPayload } = require('../lib/planSelectionPanel');
+const {
+  buildNoticePayload,
+  buildPlanPanelPayloadForChannel
+} = require('../lib/planSelectionPanel');
 const { buildVerificationPanel } = require('../lib/verificationPanel');
 const { replacePanelMessage } = require('../lib/panelUtils');
 const { toComponentsV2 } = require('../lib/componentsV2');
@@ -363,7 +366,11 @@ async function retailCommand(interaction) {
 
   if (plansChannel?.isTextBased()) {
     suppressPanelRestore(plansChannel.id, 15000);
-    await replacePanelMessage(plansChannel, buildPlanSelectionPanelPayload(interaction.guild.id), { deleteAll: true });
+    await replacePanelMessage(
+      plansChannel,
+      buildPlanPanelPayloadForChannel(interaction.guild.id, plansChannel.id, setup),
+      { deleteAll: true }
+    );
   }
 
   if (promotionsChannel?.isTextBased()) {
@@ -416,6 +423,7 @@ async function clearCommand(interaction) {
 async function salesPanelCommand(interaction) {
   const selectedChannel = interaction.options.getChannel('canal');
   const targetChannel = selectedChannel || interaction.channel;
+  const setup = getGuildSetup(interaction.guild.id) || {};
 
   if (!targetChannel?.isTextBased()) {
     await interaction.reply(buildNoticePayload('Selecione um canal de texto ou use o comando em um canal de texto.', 0xff4757));
@@ -423,7 +431,11 @@ async function salesPanelCommand(interaction) {
   }
 
   suppressPanelRestore(targetChannel.id, 15000);
-  await replacePanelMessage(targetChannel, buildPlanSelectionPanelPayload(interaction.guild.id), { deleteAll: true });
+  await replacePanelMessage(
+    targetChannel,
+    buildPlanPanelPayloadForChannel(interaction.guild.id, targetChannel.id, setup),
+    { deleteAll: true }
+  );
   await interaction.reply(buildNoticePayload(`✅ Painel de vendas enviado em ${targetChannel}.`));
 }
 

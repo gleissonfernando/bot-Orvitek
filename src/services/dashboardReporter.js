@@ -4,6 +4,7 @@ const packageInfo = require('../../package.json');
 
 const DASHBOARD_REPORT_INTERVAL_MS = 15 * 1000;
 const DASHBOARD_FETCH_TIMEOUT_MS = 5000;
+const DASHBOARD_ERROR_LOG_COOLDOWN_MS = 5 * 60 * 1000;
 const REPORTER_SYMBOL = Symbol.for('orvitek.dashboardReporter');
 
 function stripTrailingSlashes(value) {
@@ -34,18 +35,50 @@ class DashboardReporter {
     this.inFlight = false;
     this.lastCpuUsage = process.cpuUsage();
     this.lastCpuTime = process.hrtime.bigint();
+    this.lastErrorLogAt = 0;
+    this.disabledByEnv = false;
     this.endpoint = this.buildEndpoint();
   }
 
   buildEndpoint() {
     const baseUrl = stripTrailingSlashes(this.env.DASHBOARD_URL);
     const botId = String(this.env.DASHBOARD_BOT_ID || '').trim();
+    const enabled = String(this.env.DASHBOARD_ENABLED || '').trim().toLowerCase();
+
+    if (['0', 'false', 'no', 'nao', 'não', 'off'].includes(enabled)) {
+      this.disabledByEnv = true;
+      return null;
+    }
 
     if (!baseUrl || !botId) {
       return null;
     }
 
+    try {
+      const url = new URL(baseUrl);
+      if (!['http:', 'https:'].includes(url.protocol)) {
+        return null;
+      }
+    } catch {
+      return null;
+    }
+
     return `${baseUrl}/api/bots/${encodeURIComponent(botId)}/metrics`;
+  }
+
+  warn(message, options = {}) {
+    if (!options.throttle) {
+      console.warn(message);
+      return;
+    }
+
+    const now = Date.now();
+    if (now - this.lastErrorLogAt < DASHBOARD_ERROR_LOG_COOLDOWN_MS) {
+      return;
+    }
+
+    this.lastErrorLogAt = now;
+    console.warn(message);
   }
 
   registerEventCounters() {
@@ -62,6 +95,10 @@ class DashboardReporter {
 
   start() {
     if (!this.endpoint) {
+      if (this.disabledByEnv) {
+        console.log('[Dashboard] Sincronizacao desativada por DASHBOARD_ENABLED=false.');
+        return;
+      }
       console.warn('[Dashboard] Sincronizacao desativada: configure DASHBOARD_URL e DASHBOARD_BOT_ID no .env.');
       return;
     }
@@ -150,13 +187,14 @@ class DashboardReporter {
 
       if (!response.ok) {
         const responseText = await response.text().catch(() => '');
-        console.warn(
+        this.warn(
           `[Dashboard] Falha ao sincronizar metricas: HTTP ${response.status} ${response.statusText}. ` +
-            `Resposta: ${truncate(responseText) || 'sem corpo'}`
+            `Resposta: ${truncate(responseText) || 'sem corpo'}`,
+          { throttle: true }
         );
       }
     } catch (error) {
-      console.warn(`[Dashboard] Falha ao sincronizar metricas: ${error.message}`);
+      this.warn(`[Dashboard] Falha ao sincronizar metricas: ${error.message}`, { throttle: true });
     } finally {
       clearTimeout(timeout);
       this.inFlight = false;

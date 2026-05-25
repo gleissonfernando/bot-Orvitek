@@ -212,6 +212,7 @@ function defaultSystemSettings() {
       premium: 250,
       lifetime: 450,
       fivemFac: 150,
+      monthly: 12,
       hosting: 12
     },
     coupon: {

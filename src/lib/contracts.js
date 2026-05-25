@@ -36,6 +36,10 @@ function planInfo(type, settings = {}) {
     return { name: 'FiveM FAC', total };
   }
 
+  if (type === 'plan_monthly') {
+    return { name: 'Mensal', total };
+  }
+
   return { name: 'Básico', total };
 }
 

@@ -1,36 +1,43 @@
-const { EmbedBuilder, SlashCommandBuilder } = require('discord.js');
-const { getSummary } = require('../lib/store');
-const { money } = require('../lib/format');
-const { requireAdmin } = require('../lib/permissions');
-const { privateReply } = require('../lib/replies');
+const { PermissionFlagsBits, SlashCommandBuilder } = require('discord.js');
+const {
+  buildSystemPanelButtons,
+  buildSystemPanelEmbed,
+  suppressPanelRestore
+} = require('../lib/interactions');
+const { buildNoticePayload } = require('../lib/planSelectionPanel');
+const { replacePanelMessage } = require('../lib/panelUtils');
+const { updateSystemSettings } = require('../lib/store');
 
 module.exports = {
   data: new SlashCommandBuilder()
     .setName('painel')
-    .setDescription('Mostra um resumo do sistema de vendas.'),
+    .setDescription('Envia o painel de controle do sistema.')
+    .addChannelOption((option) =>
+      option.setName('canal').setDescription('Canal onde o painel de controle sera enviado.').setRequired(false)
+    )
+    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),
 
   async execute(interaction) {
-    if (!(await requireAdmin(interaction))) {
+    const targetChannel = interaction.options.getChannel('canal') || interaction.channel;
+    if (!targetChannel?.isTextBased()) {
+      await interaction.reply(buildNoticePayload('Selecione um canal de texto ou use o comando em um canal de texto.', 0xff4757));
       return;
     }
 
-    const summary = getSummary();
+    updateSystemSettings(interaction.guild.id, {
+      ui: {
+        systemPanelChannelId: targetChannel.id,
+        systemPanelUpdatedBy: interaction.user.id,
+        systemPanelUpdatedAt: new Date().toISOString()
+      }
+    });
 
-    await interaction.reply(privateReply({
-      embeds: [
-        new EmbedBuilder()
-          .setColor(0x1abc9c)
-          .setTitle('Painel de vendas')
-          .addFields(
-            { name: 'Produtos ativos', value: String(summary.products), inline: true },
-            { name: 'Pedidos', value: String(summary.orders), inline: true },
-            { name: 'Faturamento', value: money(summary.revenue), inline: true },
-            { name: 'Pendentes', value: String(summary.byStatus.pendente || 0), inline: true },
-            { name: 'Pagos', value: String(summary.byStatus.pago || 0), inline: true },
-            { name: 'Entregues', value: String(summary.byStatus.entregue || 0), inline: true },
-            { name: 'Cancelados', value: String(summary.byStatus.cancelado || 0), inline: true }
-          )
-      ]
-    }));
+    suppressPanelRestore(targetChannel.id, 15000);
+    await replacePanelMessage(targetChannel, {
+      embeds: [buildSystemPanelEmbed(interaction.guild)],
+      components: buildSystemPanelButtons()
+    }, { deleteAll: true });
+
+    await interaction.reply(buildNoticePayload(`Painel de controle enviado em ${targetChannel}.`));
   }
 };

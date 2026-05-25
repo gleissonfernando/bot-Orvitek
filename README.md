@@ -84,11 +84,27 @@ Quando essa integracao esta ativa e a hospedagem de um cliente passa do prazo de
 ```bash
 ORVITEK_HOSTING_BOT_ENABLED=true
 MONGODB_HOSTING_EVENTS_COLLECTION=hosting_shutdown_events
+HOSTING_API_URL=https://hospedagem.seudominio.com
 ORVITEK_HOSTING_BOT_URL=https://hospedagem.seudominio.com/api/orvitek/desligar
 ORVITEK_HOSTING_BOT_TOKEN=um_token_compartilhado_entre_os_bots
 ORVITEK_HOSTING_BOT_TIMEOUT_MS=10000
 ORVITEK_HOSTING_BOT_DEBUG=false
 ```
+
+Para o plano FiveM FAC, quando o pagamento/ativacao for aprovado, o bot gera um codigo numerico de 4 digitos e envia por DM ao cliente. Esse codigo e enviado ao bot de hospedagem via `POST ${HOSTING_API_URL}/api/orvitek/fivem-fac-token`; se a API responder conflito, outro codigo e gerado automaticamente. O cliente deve usar `/ativar` no bot hospedado dele para liberar o `/painel-fac`.
+
+O painel de planos tambem possui o **Plano Mensal**, com hospedagem inclusa no valor mensal e suporte ao cupom ativo antes da assinatura do contrato. Ele abre ticket na categoria `plano mensal - mensal`; quando uma categoria chega a 10 canais, o bot cria a proxima automaticamente. O fluxo mensal envia contrato, libera o pagamento mensal com o desconto do cupom quando aplicado e so gera o codigo de liberacao depois que o cliente cadastra a chave/senha no canal dele.
+
+Se quiser separar os paineis por canal, configure no `.env`:
+
+```bash
+MONTHLY_PLAN_CHANNEL_ID=id_do_canal_plano_mensal
+LIFETIME_PLAN_CHANNEL_ID=id_do_canal_plano_vitalicio
+```
+
+Depois publique com o script de planos. O bot agora trabalha com dois paineis separados: o canal mensal recebe somente o **Plano Mensal** com hospedagem inclusa, e o canal vitalicio recebe somente o **Plano Vitalicio**. Nesse caso o bot e vitalicio, mas a hospedagem continua mensal quando contratada.
+
+Se esses IDs ficarem vazios, o setup usa `planos-e-precos` como painel mensal e `comprar-agora` como painel vitalicio.
 
 No banco, o bot grava/upserta um documento na colecao `hosting_shutdown_events` com `status: "pending"`, `eventId`, `payload`, `createdAt` e `updatedAt`. O outro bot pode buscar por `status: "pending"`, desligar usando `payload.hosting.accessKey` e depois atualizar para `status: "processed"` com `processedAt`.
 

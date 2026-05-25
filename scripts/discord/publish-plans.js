@@ -1,7 +1,7 @@
 require('dotenv').config();
 
 const { Client, Events, GatewayIntentBits } = require('discord.js');
-const { buildPlanSelectionPanelPayload } = require('../../src/lib/planSelectionPanel');
+const { buildLifetimePlanPanelPayload, buildMonthlyPlanPanelPayload } = require('../../src/lib/planSelectionPanel');
 const { getGuildSetup } = require('../../src/lib/store');
 const { replacePanelMessage } = require('../../src/lib/panelUtils');
 
@@ -26,29 +26,44 @@ async function findChannel(guild, configuredChannelId, names) {
   ) || null;
 }
 
+async function findConfiguredChannel(guild, configuredChannelId, names) {
+  if (!configuredChannelId) return null;
+  return findChannel(guild, configuredChannelId, names);
+}
+
 client.once(Events.ClientReady, async () => {
   const guild = await client.guilds.fetch(process.env.GUILD_ID);
   const setup = getGuildSetup(guild.id);
   const channels = [
-    await findChannel(
-      guild,
-      process.env.CANAL_ID || process.env.PLAN_PANEL_CHANNEL_ID || setup?.channels?.plans,
-      ['planos-e-precos', 'planos', 'precos']
-    ),
-    await findChannel(
-      guild,
-      process.env.BUY_NOW_CHANNEL_ID || setup?.channels?.buyNow,
-      ['comprar-agora']
-    )
+    {
+      channel: await findConfiguredChannel(
+        guild,
+        process.env.MONTHLY_PLAN_CHANNEL_ID || setup?.channels?.plans,
+        ['plano-mensal', 'mensal']
+      ),
+      payload: buildMonthlyPlanPanelPayload(guild.id),
+      label: 'Painel mensal'
+    },
+    {
+      channel: await findConfiguredChannel(
+        guild,
+        process.env.LIFETIME_PLAN_CHANNEL_ID || setup?.channels?.buyNow,
+        ['plano-vitalicio', 'vitalicio']
+      ),
+      payload: buildLifetimePlanPanelPayload(guild.id),
+      label: 'Painel vitalicio'
+    }
   ].filter(Boolean);
 
-  if (!channels.length) {
-    throw new Error('Canal planos-e-precos não encontrado. Configure CANAL_ID no .env ou execute /ativar primeiro.');
+  const targets = channels.filter((entry) => entry.channel);
+
+  if (!targets.length) {
+    throw new Error('Nenhum canal de painel encontrado. Execute /ativar primeiro ou configure MONTHLY_PLAN_CHANNEL_ID/LIFETIME_PLAN_CHANNEL_ID.');
   }
 
-  for (const channel of channels) {
-    await replacePanelMessage(channel, buildPlanSelectionPanelPayload(guild.id));
-    console.log(`Painel de planos publicado em #${channel.name}.`);
+  for (const target of targets) {
+    await replacePanelMessage(target.channel, target.payload);
+    console.log(`${target.label} publicado em #${target.channel.name}.`);
   }
 
   client.destroy();

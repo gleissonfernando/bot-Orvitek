@@ -95,6 +95,21 @@ const planTemplates = [
       'Canais e permissões organizados',
       'Configuração inicial no seu servidor'
     ]
+  },
+  {
+    id: 'monthly',
+    buttonId: 'plan_monthly',
+    emoji: '📅',
+    name: 'Plano Mensal',
+    priceKey: 'monthly',
+    benefits: [
+      'Pagamento mensal',
+      'Hospedagem inclusa',
+      'Aceita cupom ativo',
+      'Contrato e Pix no ticket',
+      'Categoria Plano Mensal',
+      'Chave de acesso e codigo apos criar senha'
+    ]
   }
 ];
 
@@ -118,14 +133,16 @@ function withCurrentPrice(plan, prices) {
   return {
     ...plan,
     price,
-    priceLabel: `${formatMoney(price)} unico`
+    priceLabel: plan.id === 'monthly' ? `${formatMoney(price)}/mes` : `${formatMoney(price)} unico`
   };
 }
 
-function getPlans(guildId = null) {
+function getPlans(guildId = null, planIds = null) {
   const settings = getSystemSettings(resolveGuildId(guildId));
-  const displayOrder = ['basico', 'profissional', 'fivem_fac', 'vitalicio'];
+  const displayOrder = ['basico', 'profissional', 'fivem_fac', 'monthly', 'vitalicio'];
+  const allowedPlanIds = Array.isArray(planIds) && planIds.length ? new Set(planIds) : null;
   return planTemplates
+    .filter((plan) => !allowedPlanIds || allowedPlanIds.has(plan.id))
     .map((plan) => withCurrentPrice(plan, settings.prices))
     .sort((a, b) => displayOrder.indexOf(a.id) - displayOrder.indexOf(b.id));
 }
@@ -176,37 +193,61 @@ function buildLegacyPlanSection(plan) {
     );
 }
 
+function normalizePanelPlanIds(planIds = null) {
+  if (!planIds) return null;
+  if (Array.isArray(planIds)) return planIds.filter(Boolean);
+  return String(planIds)
+    .split(',')
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
 function buildPlanSection(plan) {
   const names = {
     basico: '🌱 Plano Basico',
     profissional: '🚀 Plano Profissional',
     vitalicio: '👑 Plano Vitalicio',
-    fivem_fac: '🏙️ Plano FiveM FAC'
+    fivem_fac: '🏙️ Plano FiveM FAC',
+    monthly: '📅 Plano Mensal'
   };
   const idealFor = {
     basico: 'Servidores pequenos que precisam comecar com automacoes essenciais.',
     profissional: 'Comunidades que precisam de tickets, paineis e operacao completa.',
-    vitalicio: 'Quem quer fechar o projeto de forma definitiva, sem renovacao do bot.',
-    fivem_fac: 'Faccoes FiveM que precisam controlar recrutamento, registro e hierarquia.'
+    vitalicio: 'Quem quer fechar o projeto de forma definitiva. O bot e vitalicio, e a hospedagem e paga mensalmente se usar nossa hospedagem.',
+    fivem_fac: 'Faccoes FiveM que precisam controlar recrutamento, registro e hierarquia.',
+    monthly: 'Quem quer pagar por mes com hospedagem inclusa no valor do plano.'
   };
   const cleanBenefits = {
     basico: ['Comandos essenciais', 'Painel simples com botoes', 'Boas-vindas, avisos e logs basicos', 'Configuracao inicial inclusa'],
     profissional: ['Tudo do Basico', 'Sistema de tickets e suporte', 'Automacoes avancadas e relatorios', 'Painel completo para operacao'],
-    vitalicio: ['Tudo do Profissional', 'Acesso vitalicio ao bot contratado', 'Ajustes prioritarios de implantacao', 'Suporte estendido apos entrega'],
-    fivem_fac: ['Bot personalizado para faccao FiveM', 'Painel de recrutamento e registro', 'Tickets para membros e suporte', 'Hierarquia de cargos e logs internos']
+    vitalicio: ['Tudo do Profissional', 'Acesso vitalicio ao bot contratado', 'Sem renovacao do plano do bot', 'Hospedagem cobrada por mes quando contratada'],
+    fivem_fac: ['Bot personalizado para faccao FiveM', 'Painel de recrutamento e registro', 'Tickets para membros e suporte', 'Hierarquia de cargos e logs internos'],
+    monthly: ['Pagamento mensal', 'Hospedagem inclusa', 'Aceita cupom ativo', 'Contrato e Pix no ticket', 'Codigo de liberacao apos criar senha']
   };
   const benefits = (cleanBenefits[plan.id] || plan.benefits || []).map((benefit) => `• ${benefit}`).join('\n');
 
   return new TextDisplayBuilder().setContent(
     `### ${names[plan.id] || plan.name}\n` +
-      `**Valor:** ${formatMoney(plan.price)} unico\n` +
+      `**Valor:** ${plan.priceLabel}\n` +
       `**Indicado para:** ${idealFor[plan.id] || 'Projetos personalizados.'}\n\n` +
       benefits
     );
 }
 
-function buildSalesPanelContainer(guildId = null) {
-  const plans = getPlans(guildId);
+function buildSalesPanelContainer(guildId = null, options = {}) {
+  const planIds = normalizePanelPlanIds(options.planIds);
+  const plans = getPlans(guildId, planIds);
+  const monthlyOnly = planIds?.length === 1 && planIds[0] === 'monthly';
+  const panelTitle = options.title || (monthlyOnly ? '📅 **Plano Mensal**' : '🛒 **Loja de Planos**');
+  const panelDescription = options.description || (monthlyOnly
+    ? 'Contrate por mes com hospedagem inclusa, contrato, Pix e liberacao controlada.'
+    : 'Escolha o melhor plano para você e garanta seu acesso agora mesmo.');
+  const howItWorksText = monthlyOnly
+    ? 'Escolha o plano mensal, assine o contrato, confirme o Pix e crie a chave/senha para receber o codigo de liberacao.'
+    : 'Escolha um plano, assine o contrato, selecione 50% ou 100%, confirme o pagamento e entre na fila de producao.';
+  const extraText = monthlyOnly
+    ? '**Hospedagem inclusa no mensal.**\nO pagamento do plano mensal ja cobre a hospedagem do bot.'
+    : '**No vitalicio, a hospedagem e separada.**\nO bot fica vitalicio, mas a hospedagem continua mensal quando contratada.';
   const container = new ContainerBuilder()
     .setAccentColor(SALES_PANEL_COLOR)
     .addMediaGalleryComponents(
@@ -219,22 +260,20 @@ function buildSalesPanelContainer(guildId = null) {
     .addSeparatorComponents(buildSeparator())
     .addTextDisplayComponents(
       new TextDisplayBuilder().setContent(
-        '🛒 **Loja de Planos**\n' +
-          'Escolha o melhor plano para você e garanta seu acesso agora mesmo.'
+        `${panelTitle}\n${panelDescription}`
       )
     )
     .addSeparatorComponents(buildSeparator())
     .addTextDisplayComponents(
       new TextDisplayBuilder().setContent(
         '## Como funciona\n' +
-          'Escolha um plano, assine o contrato, selecione 50% ou 100%, confirme o pagamento e entre na fila de producao.'
+          howItWorksText
       )
     )
     .addSeparatorComponents(buildSeparator())
     .addTextDisplayComponents(
       new TextDisplayBuilder().setContent(
-        '**Tambem vendemos planos mensais e semanais.**\n' +
-          'Para contratar por periodo menor, abra um atendimento e fale com a equipe.'
+        extraText
       )
     )
     .addSeparatorComponents(buildSeparator());
@@ -245,37 +284,67 @@ function buildSalesPanelContainer(guildId = null) {
       .addSeparatorComponents(buildSeparator());
   }
 
-  return container
-    .addActionRowComponents(
-      new ActionRowBuilder().addComponents(
-        ...plans.map((plan) =>
-          new ButtonBuilder()
-            .setCustomId(plan.buttonId)
-            .setLabel(({
-              basico: 'Basico',
-              profissional: 'Profissional',
-              vitalicio: 'Vitalicio',
-              fivem_fac: 'FiveM FAC'
-            })[plan.id] || plan.name.replace('Plano ', ''))
-            .setStyle(plan.id === 'profissional' ? ButtonStyle.Success : ButtonStyle.Secondary)
-        )
-      )
+  if (!plans.length) {
+    return container.addTextDisplayComponents(
+      new TextDisplayBuilder().setContent('Nenhum plano configurado para este painel.')
     );
+  }
+
+  return container.addActionRowComponents(
+    new ActionRowBuilder().addComponents(
+      ...plans.map((plan) =>
+        new ButtonBuilder()
+          .setCustomId(plan.buttonId)
+          .setLabel(({
+            basico: 'Basico',
+            profissional: 'Profissional',
+            vitalicio: 'Vitalicio',
+            fivem_fac: 'FiveM FAC',
+            monthly: 'Mensal'
+          })[plan.id] || plan.name.replace('Plano ', ''))
+          .setStyle(plan.id === 'profissional' || plan.id === 'monthly' ? ButtonStyle.Success : ButtonStyle.Secondary)
+      )
+    )
+  );
 }
 
-function buildPlanSelectionPanelPayload(guildId = null) {
-  return buildPayload(buildSalesPanelContainer(guildId), COMPONENTS_V2, [
+function buildPlanSelectionPanelPayload(guildId = null, options = {}) {
+  return buildPayload(buildSalesPanelContainer(guildId, options), COMPONENTS_V2, [
     { attachment: SALES_BANNER_PATH, name: SALES_BANNER_FILE_NAME }
   ]);
 }
 
-async function sendPlanSelectionPanel(client, channelId = process.env.CANAL_ID || process.env.PLAN_PANEL_CHANNEL_ID) {
+function buildMonthlyPlanPanelPayload(guildId = null) {
+  return buildPlanSelectionPanelPayload(guildId, {
+    planIds: ['monthly'],
+    title: '📅 **Plano Mensal**',
+    description: 'Canal exclusivo do plano mensal: pagamento por mes com hospedagem inclusa.'
+  });
+}
+
+function buildLifetimePlanPanelPayload(guildId = null) {
+  return buildPlanSelectionPanelPayload(guildId, {
+    planIds: ['vitalicio'],
+    title: '👑 **Plano Vitalicio**',
+    description: 'Canal do plano vitalicio: o bot nao renova, mas a hospedagem e paga por mes quando contratada.'
+  });
+}
+
+function buildPlanPanelPayloadForChannel(guildId = null, channelId = null, setup = {}) {
+  if (channelId && (channelId === process.env.LIFETIME_PLAN_CHANNEL_ID || channelId === setup?.channels?.buyNow)) {
+    return buildLifetimePlanPanelPayload(guildId);
+  }
+
+  return buildMonthlyPlanPanelPayload(guildId);
+}
+
+async function sendPlanSelectionPanel(client, channelId = process.env.CANAL_ID || process.env.PLAN_PANEL_CHANNEL_ID, options = {}) {
   const channel = client.channels.cache.get(channelId) || await client.channels.fetch(channelId).catch(() => null);
   if (!channel?.isTextBased()) {
     throw new Error(`Canal de planos inválido ou não encontrado: ${channelId || 'sem id'}`);
   }
 
-  return channel.send(buildPlanSelectionPanelPayload(channel.guild?.id));
+  return channel.send(buildPlanSelectionPanelPayload(channel.guild?.id, options));
 }
 
 function buildStep1Container(notice = null, guildId = null) {
@@ -950,7 +1019,8 @@ async function handleApprovePurchase(interaction) {
 
     await interaction.deferUpdate();
 
-    const [, userId, planId] = interaction.customId.split('_');
+    const [, userId, ...planParts] = interaction.customId.split('_');
+    const planId = planParts.join('_');
     const plan = findPlan(planId, interaction.guild.id);
     const clientRoleId = await resolveRoleId(interaction.guild, roleCandidates(setup, 'client'));
     if (!clientRoleId) {
@@ -996,7 +1066,8 @@ async function handleRejectPurchase(interaction) {
       return true;
     }
 
-    const [, userId, planId] = interaction.customId.split('_');
+    const [, userId, ...planParts] = interaction.customId.split('_');
+    const planId = planParts.join('_');
     recusaMap.set(interaction.user.id, {
       userId,
       planId,
@@ -1144,7 +1215,10 @@ async function handlePlanButton(interaction) {
 
 module.exports = {
   PLAN_SELECT_CUSTOM_ID,
+  buildLifetimePlanPanelPayload,
+  buildMonthlyPlanPanelPayload,
   buildNoticePayload,
+  buildPlanPanelPayloadForChannel,
   buildPlanSelectionPanelPayload,
   handlePlanButton,
   handlePlanSelection,

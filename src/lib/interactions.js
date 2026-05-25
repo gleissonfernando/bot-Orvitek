@@ -70,13 +70,16 @@ const {
 } = require('./contracts');
 const { buildPromotionEmbed, getBoostDiscountPercent, getPlanPricing } = require('./plans');
 const {
+  createFivemFacPanelToken,
   deleteHostingRegistrationPermission,
   notifyHostingBotShutdown,
   saveHostingRegistrationPermission
 } = require('../services/hostingBotNotifier');
 const {
   PLAN_SELECT_CUSTOM_ID,
-  buildPlanSelectionPanelPayload,
+  buildLifetimePlanPanelPayload,
+  buildMonthlyPlanPanelPayload,
+  buildPlanPanelPayloadForChannel,
   handlePlanButton,
   handlePlanSelection,
   handleReceiptModalSubmit
@@ -232,6 +235,7 @@ const ticketLabels = {
   plan_pro: 'Compra - Profissional',
   plan_lifetime: 'Compra - Vitalício',
   plan_fivem_fac: 'Compra - FiveM FAC',
+  plan_monthly: 'Compra - Plano Mensal',
   plan_paid: 'Comprovante de Pagamento',
   renew_now: 'Renovação de Plano',
   renew_check: 'Verificar Renovação'
@@ -246,6 +250,7 @@ const ticketSlugs = {
   plan_pro: 'premium',
   plan_lifetime: 'vitalicio',
   plan_fivem_fac: 'fivem-fac',
+  plan_monthly: 'mensal',
   plan_paid: 'comprovante',
   renew_now: 'renovacao',
   renew_check: 'verificar-renovacao'
@@ -377,15 +382,64 @@ async function applyProjectProgressRoles(member, setup, status) {
 }
 
 function purchaseTypes(type) {
-  return ['plan_basic', 'plan_pro', 'plan_lifetime', 'plan_fivem_fac', 'plan_paid'].includes(type);
+  return ['plan_basic', 'plan_pro', 'plan_lifetime', 'plan_fivem_fac', 'plan_monthly', 'plan_paid'].includes(type);
 }
 
 function planValueFromType(typeOrPlan) {
   if (typeOrPlan === 'plan_pro' || typeOrPlan === 'premium' || typeOrPlan === 'profissional') return 'premium';
   if (typeOrPlan === 'plan_lifetime' || typeOrPlan === 'vitalicio') return 'vitalicio';
   if (typeOrPlan === 'plan_fivem_fac' || typeOrPlan === 'fivem_fac' || typeOrPlan === 'fivem-fac') return 'fivem_fac';
+  if (typeOrPlan === 'plan_monthly' || typeOrPlan === 'monthly' || typeOrPlan === 'mensal') return 'mensal';
   if (typeOrPlan === 'plan_paid' || typeOrPlan === 'comprovante') return 'comprovante';
   return 'basico';
+}
+
+function isFivemFacPlan(typeOrPlan) {
+  return ['fivem_fac', 'mensal'].includes(planValueFromType(typeOrPlan));
+}
+
+function isRecurringSupportPlan(typeOrPlan) {
+  const normalized = String(typeOrPlan || '').toLowerCase();
+  return ['mensal', 'semanal', 'weekly', 'plan_weekly'].includes(normalized) || planValueFromType(typeOrPlan) === 'mensal';
+}
+
+function isRecurringTicketType(type) {
+  return type === 'plan_monthly' || isRecurringSupportPlan(type);
+}
+
+async function deliverFivemFacPanelToken({ guild, member, clientRecord, planType }) {
+  if (!isFivemFacPlan(planType)) {
+    return { ok: false, skipped: true, reason: 'Plano nao e FiveM FAC' };
+  }
+
+  const result = await createFivemFacPanelToken(guild, clientRecord);
+  if (!result.ok) {
+    console.warn('Nao foi possivel gerar token FAC no bot de hospedagem:', {
+      guildId: guild?.id,
+      userId: clientRecord?.userId,
+      projectName: clientRecord?.projectName,
+      reason: result.reason || result.error || result.status
+    });
+    return result;
+  }
+
+  if (member?.user) {
+    await sendDmPanel(
+      member.user,
+      new EmbedBuilder()
+        .setColor(colors.default)
+        .setTitle(isFivemFacPlan(planType) && planValueFromType(planType) === 'fivem_fac' ? 'Painel FAC liberado' : 'Acesso mensal liberado')
+        .setDescription(
+          `Seu codigo de liberacao e: \`${result.token}\`\n\n` +
+            'Use `/ativar` no bot hospedado no seu servidor para liberar o acesso.\n' +
+            'Esse codigo tem uso unico: depois de usado, ele nunca mais funcionara.'
+        )
+        .addFields({ name: 'Servidor de uso', value: result.guildId, inline: true })
+        .setTimestamp()
+    ).catch(() => null);
+  }
+
+  return result;
 }
 
 function isBlockingContractRecord(record) {
@@ -477,6 +531,45 @@ function isPaymentConfirmedForHosting(queueEntry, payment) {
   if (queueEntry?.paymentStatus === 'paid') return true;
   if (queueEntry?.paymentPaidAt) return true;
   return false;
+}
+
+async function syncPaidHostingPermission(guild, record = {}, options = {}) {
+  const accessKey = String(record.accessKey || '').trim();
+  const userId = record.userId || record.ownerId;
+  if (!guild || !accessKey || !userId) {
+    return { ok: false, skipped: true, reason: 'Dados insuficientes para liberar chave' };
+  }
+
+  const isPaid = options.force
+    || record.hostingPaymentStatus === 'paid'
+    || record.paymentStatus === 'paid'
+    || Boolean(record.paymentPaidAt);
+  if (!isPaid) {
+    return { ok: false, skipped: true, reason: 'Pagamento ainda nao confirmado' };
+  }
+
+  const result = await saveHostingRegistrationPermission(guild, {
+    ...record,
+    userId,
+    userTag: record.userTag || record.ownerTag || null,
+    hostingStatus: record.hostingStatus || 'current',
+    hostingPaymentStatus: 'paid'
+  }, {
+    allowed: true,
+    status: 'paid',
+    reason: options.reason || 'Pagamento confirmado'
+  }).catch((error) => ({ ok: false, error: error.message }));
+
+  if (!result.ok && !result.skipped) {
+    console.warn('Nao foi possivel liberar chave no Orvitek Hospedagem:', {
+      userId,
+      projectName: record.projectName || null,
+      accessKey,
+      result
+    });
+  }
+
+  return result;
 }
 
 function paymentStatusLabel(payment) {
@@ -643,6 +736,7 @@ function planLabel(typeOrPlan) {
   if (typeOrPlan === 'plan_pro' || typeOrPlan === 'premium' || typeOrPlan === 'profissional') return 'Plano Premium';
   if (typeOrPlan === 'plan_lifetime' || typeOrPlan === 'vitalicio') return 'Plano Vitalício';
   if (typeOrPlan === 'plan_fivem_fac' || typeOrPlan === 'fivem_fac' || typeOrPlan === 'fivem-fac') return 'Plano FiveM FAC';
+  if (typeOrPlan === 'plan_monthly' || typeOrPlan === 'monthly' || typeOrPlan === 'mensal') return 'Plano Mensal';
   if (typeOrPlan === 'plan_paid' || typeOrPlan === 'comprovante') return 'Compra personalizada';
   return 'Plano Básico';
 }
@@ -781,6 +875,135 @@ function buildContractCorrectionActions() {
   ];
 }
 
+function buildRecurringPaymentIntroPanel(ticket, settings = {}) {
+  const pricing = getPlanPricing(ticket.type, settings, null);
+
+  return {
+    embeds: [
+      new EmbedBuilder()
+        .setColor(colors.gold)
+        .setTitle('Pagamento do plano')
+        .setDescription(
+          'Para plano mensal/semanal, o contrato e opcional. Primeiro informe os dados de pagamento e gere o Pix.\n\n' +
+            'Depois que o pagamento for confirmado, o bot libera o botao **Enviar contrato** para o cliente usar somente se quiser.'
+        )
+        .addFields(
+          { name: 'Plano', value: planLabel(ticket.type), inline: true },
+          { name: 'Valor', value: brl(pricing.final), inline: true },
+          { name: 'Contrato', value: 'Opcional apos pagamento', inline: true }
+        )
+        .setTimestamp()
+    ],
+    components: [
+      new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId('payment_customer_start').setLabel('Informar dados e gerar Pix').setStyle(ButtonStyle.Success)
+      )
+    ]
+  };
+}
+
+function buildPaymentCustomerModal(queueEntry = {}) {
+  const modal = new ModalBuilder()
+    .setCustomId('payment_customer_submit')
+    .setTitle('Dados para pagamento');
+
+  modal.addComponents(
+    new ActionRowBuilder().addComponents(
+      new TextInputBuilder()
+        .setCustomId('fullName')
+        .setLabel('Nome completo')
+        .setStyle(TextInputStyle.Short)
+        .setValue(String(queueEntry.paymentFullName || '').slice(0, 100))
+        .setRequired(true)
+    ),
+    new ActionRowBuilder().addComponents(
+      new TextInputBuilder()
+        .setCustomId('cpf')
+        .setLabel('CPF ou CNPJ')
+        .setStyle(TextInputStyle.Short)
+        .setValue(String(queueEntry.paymentCpf || '').slice(0, 30))
+        .setRequired(true)
+    ),
+    new ActionRowBuilder().addComponents(
+      new TextInputBuilder()
+        .setCustomId('email')
+        .setLabel('E-mail')
+        .setStyle(TextInputStyle.Short)
+        .setValue(String(queueEntry.paymentEmail || '').slice(0, 100))
+        .setRequired(true)
+    ),
+    new ActionRowBuilder().addComponents(
+      new TextInputBuilder()
+        .setCustomId('phoneAndPayment')
+        .setLabel('WhatsApp e contato')
+        .setPlaceholder('Ex: (11) 99999-9999 | contato alternativo')
+        .setStyle(TextInputStyle.Short)
+        .setValue(String(queueEntry.paymentPhoneAndPayment || '').slice(0, 100))
+        .setRequired(true)
+    ),
+    new ActionRowBuilder().addComponents(
+      new TextInputBuilder()
+        .setCustomId('projectName')
+        .setLabel('Nome do projeto/bot')
+        .setStyle(TextInputStyle.Short)
+        .setValue(String(queueEntry.projectName || '').slice(0, 100))
+        .setRequired(true)
+    )
+  );
+
+  return modal;
+}
+
+function buildRecurringPaymentReadyPanel(queueEntry = {}) {
+  return {
+    embeds: [
+      new EmbedBuilder()
+        .setColor(colors.gold)
+        .setTitle('Dados salvos')
+        .setDescription('Agora gere o Pix do plano. O contrato continua opcional e so aparece depois do pagamento confirmado.')
+        .addFields(
+          { name: 'Projeto', value: queueEntry.projectName || 'nao informado', inline: true },
+          { name: 'Valor', value: brl(queueEntry.selectedPaymentAmount || queueEntry.paidPrice || 0), inline: true },
+          { name: 'Contrato', value: 'Opcional apos pagamento', inline: true }
+        )
+        .setTimestamp()
+    ],
+    components: [
+      new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId('queue_join').setLabel('Gerar pagamento Pix').setStyle(ButtonStyle.Success),
+        new ButtonBuilder().setCustomId('preapproved_delete_channel').setLabel('Apagar canal').setStyle(ButtonStyle.Danger)
+      )
+    ]
+  };
+}
+
+function buildPaymentContract(ticket, queueEntry = {}, member = null, settings = {}) {
+  const pricing = getPlanPricing(ticket.type, settings, queueEntry?.couponCode || null, { member });
+  const final = Number(queueEntry.finalPrice || queueEntry.paidPrice || pricing.final || 0);
+  return {
+    id: queueEntry.contractId || `payment-${ticket.channelId || queueEntry.channelId || Date.now()}`,
+    guildId: ticket.guildId || queueEntry.guildId,
+    channelId: ticket.channelId || queueEntry.channelId,
+    userId: ticket.ownerId,
+    userTag: ticket.ownerTag,
+    planType: ticket.type,
+    fullName: queueEntry.paymentFullName || queueEntry.ownerTag || ticket.ownerTag,
+    cpf: queueEntry.paymentCpf || '',
+    email: queueEntry.paymentEmail || '',
+    phoneAndPayment: queueEntry.paymentPhoneAndPayment || '',
+    projectName: queueEntry.projectName || ticket.ownerTag,
+    couponCode: queueEntry.couponCode || null,
+    couponPercent: queueEntry.couponPercent || 0,
+    boostDiscountActive: Boolean(queueEntry.boostDiscountActive),
+    boostDiscountPercent: queueEntry.boostDiscountPercent || 0,
+    basePrice: Number(queueEntry.basePrice || pricing.base || final),
+    finalPrice: final,
+    paidPrice: Number(queueEntry.selectedPaymentAmount || queueEntry.paidPrice || final),
+    entryPrice: Number(queueEntry.selectedPaymentAmount || queueEntry.entryPrice || final),
+    remainingPrice: 0
+  };
+}
+
 function buildPreApprovedPanel(contract) {
   return {
     embeds: [
@@ -847,7 +1070,19 @@ function buildPreApprovedPanel(contract) {
   };
 }
 
+function hasContractSigned(queueEntry = {}) {
+  return Boolean(queueEntry.contractId || queueEntry.signedAt);
+}
+
 function buildQueueJoinAfterPaymentPanel(queueEntry = {}) {
+  const buttons = [
+    new ButtonBuilder().setCustomId('queue_approve').setLabel('Adicionar a fila').setStyle(ButtonStyle.Success)
+  ];
+
+  if (isRecurringSupportPlan(queueEntry.plan) && !hasContractSigned(queueEntry)) {
+    buttons.push(new ButtonBuilder().setCustomId('contract_start').setLabel('Enviar contrato').setStyle(ButtonStyle.Primary));
+  }
+
   return {
     embeds: [
       new EmbedBuilder()
@@ -864,14 +1099,20 @@ function buildQueueJoinAfterPaymentPanel(queueEntry = {}) {
         .setTimestamp()
     ],
     components: [
-      new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId('queue_approve').setLabel('Adicionar a fila').setStyle(ButtonStyle.Success)
-      )
+      new ActionRowBuilder().addComponents(...buttons)
     ]
   };
 }
 
 function buildAccessRegistrationPanel(queueEntry = {}) {
+  const buttons = [
+    new ButtonBuilder().setCustomId('hosting_access_create').setLabel('Cadastrar chave e senha').setStyle(ButtonStyle.Primary)
+  ];
+
+  if (isRecurringSupportPlan(queueEntry.plan) && !hasContractSigned(queueEntry)) {
+    buttons.push(new ButtonBuilder().setCustomId('contract_start').setLabel('Enviar contrato').setStyle(ButtonStyle.Secondary));
+  }
+
   return {
     embeds: [
       new EmbedBuilder()
@@ -888,11 +1129,40 @@ function buildAccessRegistrationPanel(queueEntry = {}) {
         .setTimestamp()
     ],
     components: [
-      new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId('hosting_access_create').setLabel('Cadastrar chave e senha').setStyle(ButtonStyle.Primary)
-      )
+      new ActionRowBuilder().addComponents(...buttons)
     ]
   };
+}
+
+function buildRecurringContinuationPanel(queueEntry = {}) {
+  if (queueEntry.status === 'approved') {
+    return buildAccessRegistrationPanel(queueEntry);
+  }
+
+  return buildQueueJoinAfterPaymentPanel(queueEntry);
+}
+
+async function refreshRecurringContinuationPanel(interaction, queueEntry = {}) {
+  if (!interaction?.message?.editable) return false;
+  return interaction.message
+    .edit(toComponentsV2(buildRecurringContinuationPanel(queueEntry)))
+    .then(() => true)
+    .catch(() => false);
+}
+
+async function ensureRecurringContinuationPanel(interaction, queueEntry = {}) {
+  if (await refreshRecurringContinuationPanel(interaction, queueEntry)) {
+    return true;
+  }
+
+  if (!interaction?.channel?.isTextBased?.()) {
+    return false;
+  }
+
+  return interaction.channel
+    .send(toComponentsV2(buildRecurringContinuationPanel(queueEntry)))
+    .then(() => true)
+    .catch(() => false);
 }
 
 function buildPaymentStepPanel(contract, queueEntry = {}) {
@@ -913,6 +1183,42 @@ function buildPaymentStepPanel(contract, queueEntry = {}) {
           { name: 'Valor a pagar', value: brl(paymentPrice), inline: true },
           { name: 'Restante', value: brl(remainingPrice), inline: true },
           { name: 'Status', value: 'Aguardando pagamento Pix', inline: true }
+        )
+        .setTimestamp()
+    ],
+    components: [
+      new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId('queue_join').setLabel('Gerar pagamento Pix').setStyle(ButtonStyle.Primary),
+        new ButtonBuilder().setCustomId('payment_check').setLabel('Verificar PagBank').setStyle(ButtonStyle.Success)
+      ),
+      new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId('payment_approve').setLabel('Aprovar manualmente').setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId('payment_reject').setLabel('Recusar pagamento').setStyle(ButtonStyle.Danger),
+        new ButtonBuilder().setCustomId('preapproved_delete_channel').setLabel('Apagar canal').setStyle(ButtonStyle.Danger)
+      )
+    ]
+  };
+}
+
+function buildMonthlyPaymentPanel(contract) {
+  const paymentPrice = Number(contract?.paidPrice || contract?.finalPrice || contract?.entryPrice || 0);
+  const couponField = contract?.couponCode
+    ? [{ name: 'Cupom aplicado', value: `${contract.couponCode} (-${contract.couponPercent || 0}%)`, inline: true }]
+    : [{ name: 'Cupom', value: 'Nenhum cupom aplicado', inline: true }];
+
+  return {
+    embeds: [
+      new EmbedBuilder()
+        .setColor(colors.gold)
+        .setTitle('Pagamento mensal')
+        .setDescription(
+          `Contrato assinado para **${contract?.projectName || 'seu projeto'}**.\n\n` +
+            'Agora gere o Pix mensal com hospedagem inclusa. Depois da confirmacao, a equipe libera o cadastro de chave e senha.'
+        )
+        .addFields(
+          { name: 'Valor mensal com hospedagem', value: brl(paymentPrice), inline: true },
+          ...couponField,
+          { name: 'Status', value: 'Aguardando pagamento', inline: true }
         )
         .setTimestamp()
     ],
@@ -1073,6 +1379,48 @@ async function clearProjectFinalPanels(channel) {
   return removed;
 }
 
+async function setupRecurringSupportAccess(guild, setup, member, queueEntry, queueChannelId, projectChannel) {
+  if (!projectChannel?.isTextBased()) {
+    return { callChannel: null };
+  }
+
+  const callChannel = member ? await createSupportCall(guild, setup, member) : null;
+  const updatedQueueEntry = upsertQueueEntry(queueChannelId, {
+    supportCallChannelId: callChannel?.id || queueEntry.supportCallChannelId || null,
+    productionStatus: 'support',
+    productionStatusLabel: 'Suporte liberado',
+    supportUnlockedAt: new Date().toISOString()
+  });
+
+  upsertClient(guild.id, queueEntry.ownerId, {
+    supportCallChannelId: callChannel?.id || queueEntry.supportCallChannelId || null,
+    productionStatus: 'support',
+    productionStatusLabel: 'Suporte liberado'
+  });
+
+  await clearProjectFinalPanels(projectChannel);
+  await projectChannel.send(toComponentsV2(buildProjectSupportPanel({
+    ...queueEntry,
+    ...updatedQueueEntry,
+    channelId: queueChannelId,
+    productionStatusLabel: 'Suporte liberado'
+  }))).catch(() => null);
+
+  if (callChannel) {
+    await projectChannel.send(toComponentsV2({
+      embeds: [
+        new EmbedBuilder()
+          .setColor(colors.blue)
+          .setTitle('Call de suporte liberada')
+          .setDescription(`A call de suporte do projeto foi liberada: ${callChannel}.`)
+          .setTimestamp()
+      ]
+    })).catch(() => null);
+  }
+
+  return { callChannel };
+}
+
 function buildProjectDeadlinePanel(queueEntry) {
   return {
     embeds: [
@@ -1128,6 +1476,7 @@ function buildSystemPanelEmbed(guild) {
           `Premium: **${brl(settings.prices.premium)}**\n` +
           `Vitalício: **${brl(settings.prices.lifetime)}**\n` +
           `FiveM FAC: **${brl(settings.prices.fivemFac)}**\n` +
+          `Mensal: **${brl(settings.prices.monthly)}/mês**\n` +
           `Hospedagem: **${brl(settings.prices.hosting)}/mês**`,
         inline: false
       },
@@ -1148,7 +1497,9 @@ function buildSystemPanelEmbed(guild) {
       },
       {
         name: 'Logs de contrato',
-        value: process.env.CONTRACT_LOG_CHANNEL_ID || 'não configurado',
+        value:
+          `Contrato: ${process.env.CONTRACT_LOG_CHANNEL_ID || 'não configurado'}\n` +
+          `PDF: ${process.env.CONTRACT_PDF_LOG_CHANNEL_ID || process.env.CONTRACT_LOG_CHANNEL_ID || 'não configurado'}`,
         inline: true
       },
       {
@@ -1210,6 +1561,7 @@ function buildSystemPanelButtons() {
           { label: 'Editar Premium', value: 'panel_price_premium', description: 'Alterar o valor do plano Premium.' },
           { label: 'Editar Vitalício', value: 'panel_price_lifetime', description: 'Alterar o valor do plano Vitalício.' },
           { label: 'Editar FiveM FAC', value: 'panel_price_fivem_fac', description: 'Alterar o valor do plano FiveM FAC.' },
+          { label: 'Editar Mensal', value: 'panel_price_monthly', description: 'Alterar o valor do Plano Mensal.' },
           { label: 'Editar Hospedagem', value: 'panel_price_hosting', description: 'Alterar o valor mensal da hospedagem.' },
           { label: 'Cadastrar Cupom', value: 'panel_coupon_create', description: 'Criar ou atualizar o cupom ativo.' },
           { label: 'Remover Cupom', value: 'panel_coupon_clear', description: 'Desativar o cupom atual.' },
@@ -1227,6 +1579,21 @@ function buildSystemPanelButtons() {
         )
     )
   ];
+}
+
+function buildSystemToolPromptPayload(message) {
+  return privateReply({
+    content: `${message}\n\nSelecione outra ferramenta abaixo para continuar no painel.`,
+    components: buildSystemPanelButtons()
+  });
+}
+
+function buildSystemToolPromptUpdate(message) {
+  return {
+    content: `${message}\n\nSelecione outra ferramenta abaixo para continuar no painel.`,
+    embeds: [],
+    components: buildSystemPanelButtons()
+  };
 }
 
 function buildVipPromotionEmbed(settings) {
@@ -1372,7 +1739,7 @@ async function publishSalesPanels(guild, setup, options = {}) {
   const vipOnlyChannel = setup?.channels?.vipOnly ? await guild.channels.fetch(setup.channels.vipOnly).catch(() => null) : null;
 
   if (plansChannel?.isTextBased()) {
-    await replaceStaticPanelMessage(plansChannel, buildPlanSelectionPanelPayload(guild.id));
+    await replaceStaticPanelMessage(plansChannel, buildMonthlyPlanPanelPayload(guild.id));
   }
 
   if (includePromotions && promotionsChannel?.isTextBased()) {
@@ -1382,7 +1749,7 @@ async function publishSalesPanels(guild, setup, options = {}) {
   }
 
   if (buyNowChannel?.isTextBased()) {
-    await replaceStaticPanelMessage(buyNowChannel, buildPlanSelectionPanelPayload(guild.id)).catch(() => null);
+    await replaceStaticPanelMessage(buyNowChannel, buildLifetimePlanPanelPayload(guild.id)).catch(() => null);
   }
 
   if (vipOnlyChannel?.isTextBased()) {
@@ -1410,8 +1777,8 @@ async function publishAllConfiguredPanels(guild, setup) {
   if (await replaceConfiguredPanel(guild, setup.channels?.rules, { embeds: buildServerRulesEmbeds() })) published += 1;
   if (await replaceConfiguredPanel(guild, setup.channels?.howItWorks, { embeds: buildHowItWorksEmbeds() })) published += 1;
   if (await replaceConfiguredPanel(guild, setup.channels?.supportRules, { embeds: buildSupportRulesEmbeds() })) published += 1;
-  if (await replaceConfiguredPanel(guild, setup.channels?.plans, buildPlanSelectionPanelPayload(guild.id))) published += 1;
-  if (await replaceConfiguredPanel(guild, setup.channels?.buyNow, buildPlanSelectionPanelPayload(guild.id))) published += 1;
+  if (await replaceConfiguredPanel(guild, setup.channels?.plans, buildMonthlyPlanPanelPayload(guild.id))) published += 1;
+  if (await replaceConfiguredPanel(guild, setup.channels?.buyNow, buildLifetimePlanPanelPayload(guild.id))) published += 1;
   if (await replaceConfiguredPanel(guild, setup.channels?.promotions, { embeds: [buildPromotionEmbed(settings.retail.active)] })) published += 1;
   if (await replaceConfiguredPanel(guild, setup.channels?.vipOnly, { embeds: [buildVipPromotionEmbed(settings)] })) published += 1;
   if (await replaceConfiguredPanel(guild, setup.channels?.openTicket, buildTicketPanelPayload())) published += 1;
@@ -1508,14 +1875,14 @@ async function handleSystemPanelButton(interaction, setup, selectedTool = intera
     }
     await safeReply(
       interaction,
-      privateReply(active ? 'Promoção ativada no painel de controle.' : 'Promoção desativada no painel de controle.')
+      buildSystemToolPromptPayload(active ? 'Promoção ativada no painel de controle.' : 'Promoção desativada no painel de controle.')
     );
     return true;
   }
 
   if (selectedTool === 'panel_refresh_sales') {
     const published = await publishAllConfiguredPanels(interaction.guild, setup);
-    await safeReply(interaction, privateReply(`Painéis republicados: ${published}.`));
+    await safeReply(interaction, buildSystemToolPromptPayload(`Painéis republicados: ${published}.`));
     return true;
   }
 
@@ -1584,6 +1951,7 @@ async function handleSystemPanelButton(interaction, setup, selectedTool = intera
     panel_price_premium: buildPriceModal('panel_price_premium_submit', 'Plano Premium', settings.prices.premium),
     panel_price_lifetime: buildPriceModal('panel_price_lifetime_submit', 'Plano Vitalício', settings.prices.lifetime),
     panel_price_fivem_fac: buildPriceModal('panel_price_fivem_fac_submit', 'Plano FiveM FAC', settings.prices.fivemFac),
+    panel_price_monthly: buildPriceModal('panel_price_monthly_submit', 'Plano Mensal', settings.prices.monthly),
     panel_price_hosting: buildPriceModal('panel_price_hosting_submit', 'Hospedagem', settings.prices.hosting),
     panel_coupon_create: buildCouponModal(settings.coupon),
     panel_boost_discount: buildBoostDiscountModal(settings),
@@ -2081,15 +2449,14 @@ async function restoreHostingAccess(guild, clientRecord, options = {}) {
     hostingPaidAt: new Date().toISOString(),
     hostingPaidBy: options.byUserId || null
   });
-  await saveHostingRegistrationPermission(guild, {
+  await syncPaidHostingPermission(guild, {
     ...clientRecord,
     hostingStatus: 'current',
     hostingPaymentStatus: 'paid',
     hostingDueAt: dueAt.toISOString(),
     hostingGraceUntil: getHostingGraceDeadline(dueAt).toISOString()
   }, {
-    allowed: true,
-    status: 'paid',
+    force: true,
     reason: 'Hospedagem paga'
   }).catch(() => null);
 
@@ -2251,6 +2618,38 @@ async function verifyMember(interaction, setup) {
   }
 }
 
+async function resolveMonthlyPlanCategory(guild, setup, type) {
+  if (type !== 'plan_monthly') {
+    return setup.categories.supportCategory || null;
+  }
+
+  const baseName = `plano mensal - ${ticketSlugs[type] || 'mensal'}`;
+  const categories = guild.channels.cache
+    .filter((channel) => channel.type === ChannelType.GuildCategory && channel.name.toLowerCase().startsWith(baseName))
+    .sort((a, b) => a.position - b.position);
+
+  for (const category of categories.values()) {
+    const childrenCount = guild.channels.cache.filter((channel) => channel.parentId === category.id).size;
+    if (childrenCount < 10) {
+      return category.id;
+    }
+  }
+
+  const suffix = categories.size ? ` ${categories.size + 1}` : '';
+  const everyoneRoleId = guild.roles.everyone?.id || guild.id;
+  const category = await guild.channels.create({
+    name: `${baseName}${suffix}`,
+    type: ChannelType.GuildCategory,
+    permissionOverwrites: [
+      { id: everyoneRoleId, deny: [PermissionFlagsBits.ViewChannel] },
+      ...staffOverwrites(guild, setup)
+    ],
+    reason: 'Categoria para tickets de Plano Mensal'
+  });
+
+  return category.id;
+}
+
 async function openTicket(interaction, setup, type, reason = null) {
   const settings = getSystemSettings(interaction.guild.id);
   const slug = ticketSlugs[type] || 'suporte';
@@ -2275,7 +2674,7 @@ async function openTicket(interaction, setup, type, reason = null) {
     }
   }
 
-  const supportCategoryId = setup.categories.supportCategory;
+  const supportCategoryId = await resolveMonthlyPlanCategory(interaction.guild, setup, type);
   const everyoneRoleId = interaction.guild.roles.everyone?.id || interaction.guild.id;
   const channel = await interaction.guild.channels.create({
     name: `suporte-${slug}-${username}`.slice(0, 90),
@@ -2368,9 +2767,14 @@ async function openTicket(interaction, setup, type, reason = null) {
   }));
 
   if (purchaseTypes(type)) {
+    const panelPayload = isRecurringTicketType(type)
+      ? buildRecurringPaymentIntroPanel(ticket, settings)
+      : {
+          embeds: [buildContractIntroEmbed(ticket, settings)],
+          components: buildContractOnlyActions()
+        };
     await channel.send(toComponentsV2({
-      embeds: [buildContractIntroEmbed(ticket, settings)],
-      components: buildContractOnlyActions()
+      ...panelPayload
     }));
   }
 
@@ -2420,7 +2824,7 @@ async function approveQueuePayment(interaction, setup, ticket, member, approvedB
 
   if (queueEntry?.status === 'approved' && queueEntry.projectChannelId) {
     const existingProjectChannel = await interaction.guild.channels.fetch(queueEntry.projectChannelId).catch(() => null);
-    await saveHostingRegistrationPermission(interaction.guild, {
+    await syncPaidHostingPermission(interaction.guild, {
       ...queueEntry,
       userId: ticket.ownerId,
       userTag: ticket.ownerTag,
@@ -2429,8 +2833,7 @@ async function approveQueuePayment(interaction, setup, ticket, member, approvedB
       hostingStatus: 'current',
       hostingPaymentStatus: 'paid'
     }, {
-      allowed: true,
-      status: 'paid',
+      force: true,
       reason: 'Pagamento confirmado'
     }).catch(() => null);
     return {
@@ -2511,7 +2914,7 @@ async function approveQueuePayment(interaction, setup, ticket, member, approvedB
     activatedBy: approvedByUserId
   });
 
-  await saveHostingRegistrationPermission(interaction.guild, {
+  await syncPaidHostingPermission(interaction.guild, {
     ...(getQueueEntry(interaction.channelId) || queueEntry || {}),
     userId: ticket.ownerId,
     userTag: ticket.ownerTag,
@@ -2525,8 +2928,7 @@ async function approveQueuePayment(interaction, setup, ticket, member, approvedB
     hostingDueAt: dueAt.toISOString(),
     hostingGraceUntil: getHostingGraceDeadline(dueAt).toISOString()
   }, {
-    allowed: true,
-    status: 'paid',
+    force: true,
     reason: 'Pagamento confirmado'
   }).catch((error) => {
     console.warn('Nao foi possivel liberar cadastro no Orvitek Hospedagem apos pagamento confirmado:', {
@@ -2535,7 +2937,6 @@ async function approveQueuePayment(interaction, setup, ticket, member, approvedB
       error: error.message
     });
   });
-
   await removeConfiguredRole(member, setup, 'futureClient', 'Futuro Cliente');
   await addRoleById(member, process.env.APPROVED_CLIENT_ROLE_ID || '1505185447813320724', 'Compra aprovada');
   await applyProjectProgressRoles(member, setup, 'queue');
@@ -2579,9 +2980,18 @@ async function handleQueueAction(interaction, setup) {
     return;
   }
 
-  const signedContract = getContract(interaction.channelId);
+  const queueEntryForPayment = getQueueEntry(interaction.channelId) || {};
+  const recurringPaymentFlow = isRecurringTicketType(ticket.type);
+  const signedContract = getContract(interaction.channelId)
+    || (recurringPaymentFlow && queueEntryForPayment.paymentFullName
+      ? buildPaymentContract(ticket, queueEntryForPayment, member, getSystemSettings(interaction.guild.id))
+      : null);
   if (!signedContract) {
-    await interaction.reply(privateReply('O contrato precisa ser assinado antes de iniciar pagamento, fila ou produção.'));
+    await interaction.reply(privateReply(
+      recurringPaymentFlow
+        ? 'Informe primeiro os dados de pagamento pelo botao **Informar dados e gerar Pix**.'
+        : 'O contrato precisa ser assinado antes de iniciar pagamento, fila ou produção.'
+    ));
     return;
   }
 
@@ -2871,6 +3281,11 @@ async function handleQueueAction(interaction, setup) {
       paymentConfirmedAt: paidAt,
       paymentConfirmedBy: interaction.user.id
     });
+    await syncPaidHostingPermission(interaction.guild, {
+      ...confirmedEntry,
+      userId: ticket.ownerId,
+      userTag: ticket.ownerTag
+    }, { reason: 'Pagamento confirmado pelo PagBank' });
     await interaction.channel.send(toComponentsV2({
       embeds: [buildPagBankPaymentEmbed(updatedPayment, signedContract)]
     })).catch(() => null);
@@ -2924,6 +3339,11 @@ async function handleQueueAction(interaction, setup) {
       paymentStatus: 'paid',
       paymentPaidAt: queueEntry?.paymentPaidAt || payment?.paidAt || approvedAt
     });
+    await syncPaidHostingPermission(interaction.guild, {
+      ...updatedEntry,
+      userId: ticket.ownerId,
+      userTag: ticket.ownerTag
+    }, { reason: 'Projeto adicionado a fila com pagamento confirmado' });
     await applyProjectProgressRoles(member, setup, 'queue');
     const position = getQueuePosition(interaction.guild.id, interaction.channelId);
     await interaction.channel.send(toComponentsV2(buildAccessRegistrationPanel(updatedEntry))).catch(() => null);
@@ -3057,6 +3477,11 @@ async function handleQueueAction(interaction, setup) {
       paymentConfirmedAt: paidAt,
       paymentConfirmedBy: interaction.user.id
     });
+    await syncPaidHostingPermission(interaction.guild, {
+      ...confirmedEntry,
+      userId: ticket.ownerId,
+      userTag: ticket.ownerTag
+    }, { reason: 'Pagamento aprovado manualmente' });
 
     await interaction.channel.send(toComponentsV2(buildQueueJoinAfterPaymentPanel(confirmedEntry))).catch(() => null);
     await interaction.reply(toComponentsV2('Pagamento aprovado. O botao **Adicionar a fila** foi liberado para o cliente.'));
@@ -3083,6 +3508,11 @@ async function handleQueueAction(interaction, setup) {
       await interaction.reply(privateReply(approval.reason));
       return;
     }
+    await syncPaidHostingPermission(interaction.guild, {
+      ...(getQueueEntry(interaction.channelId) || {}),
+      userId: ticket.ownerId,
+      userTag: ticket.ownerTag
+    }, { reason: 'Pagamento aprovado e projeto liberado' });
 
     await interaction.reply(toComponentsV2(`Pagamento aprovado. Canal do projeto criado: ${approval.projectChannel}. Posição atual: **${approval.position.position}**. Prazo médio: até 5 dias.`));
     await deleteActionPanel(interaction);
@@ -3141,6 +3571,219 @@ async function handleQueueAction(interaction, setup) {
   await sendDmPanel(member.user, buildDeliveryFeedbackDm(interaction.guild.name));
 }
 
+async function handlePaymentCustomerStart(interaction) {
+  const ticket = getTicketByChannel(interaction.channelId);
+  if (!ticket || !isRecurringTicketType(ticket.type)) {
+    await interaction.reply(privateReply('Este botao so e usado em plano mensal/semanal.'));
+    return true;
+  }
+
+  if (ticket.ownerId !== interaction.user.id && !isOwnerRole(interaction.member)) {
+    await interaction.reply(privateReply('Apenas o cliente deste atendimento pode informar os dados de pagamento.'));
+    return true;
+  }
+
+  await interaction.showModal(buildPaymentCustomerModal(getQueueEntry(interaction.channelId) || {}));
+  return true;
+}
+
+async function handlePaymentCustomerSubmit(interaction) {
+  await interaction.deferReply({ flags: 64 });
+
+  const ticket = getTicketByChannel(interaction.channelId);
+  if (!ticket || !isRecurringTicketType(ticket.type)) {
+    await interaction.editReply(toComponentsV2('Este atendimento nao e de plano mensal/semanal.'));
+    return true;
+  }
+
+  if (ticket.ownerId !== interaction.user.id && !isOwnerRole(interaction.member)) {
+    await interaction.editReply(toComponentsV2('Apenas o cliente deste atendimento pode informar os dados de pagamento.'));
+    return true;
+  }
+
+  const member = await interaction.guild.members.fetch(ticket.ownerId).catch(() => null);
+  const settings = getSystemSettings(interaction.guild.id);
+  const currentEntry = getQueueEntry(interaction.channelId) || {};
+  const contractFields = {
+    fullName: interaction.fields.getTextInputValue('fullName'),
+    cpf: interaction.fields.getTextInputValue('cpf'),
+    email: interaction.fields.getTextInputValue('email'),
+    phoneAndPayment: interaction.fields.getTextInputValue('phoneAndPayment'),
+    projectName: interaction.fields.getTextInputValue('projectName')
+  };
+
+  try {
+    validatePagBankCustomer(contractFields, member?.user || interaction.user);
+  } catch (error) {
+    await interaction.editReply(toComponentsV2(error.message));
+    return true;
+  }
+
+  const pricing = getPlanPricing(ticket.type, settings, currentEntry?.couponCode || null, { member });
+  const updatedEntry = upsertQueueEntry(interaction.channelId, {
+    guildId: interaction.guild.id,
+    ownerId: ticket.ownerId,
+    ownerTag: ticket.ownerTag,
+    plan: planValueFromType(ticket.type),
+    status: 'payment_data_ready',
+    paymentFullName: contractFields.fullName,
+    paymentCpf: contractFields.cpf,
+    paymentEmail: contractFields.email,
+    paymentPhoneAndPayment: contractFields.phoneAndPayment,
+    projectName: contractFields.projectName,
+    basePrice: pricing.base,
+    finalPrice: pricing.final,
+    entryPrice: pricing.final,
+    paidPrice: pricing.final,
+    selectedPaymentAmount: pricing.final,
+    selectedPaymentPercent: 100,
+    remainingPrice: 0,
+    couponCode: currentEntry?.couponCode || null,
+    couponPercent: currentEntry?.couponPercent || 0,
+    boostDiscountActive: pricing.boostActive,
+    boostDiscountPercent: pricing.boostPercent,
+    paymentDataSavedAt: new Date().toISOString()
+  });
+
+  await interaction.channel.send(toComponentsV2(buildRecurringPaymentReadyPanel(updatedEntry))).catch(() => null);
+  await interaction.editReply(toComponentsV2('Dados salvos. Agora clique em **Gerar pagamento Pix** no canal.'));
+  await deleteActionPanel(interaction);
+  return true;
+}
+
+function paymentContractFieldsFromQueue(queueEntry = {}) {
+  const contractFields = {
+    fullName: queueEntry.paymentFullName,
+    cpf: queueEntry.paymentCpf,
+    email: queueEntry.paymentEmail,
+    phoneAndPayment: queueEntry.paymentPhoneAndPayment,
+    projectName: queueEntry.projectName
+  };
+
+  return Object.values(contractFields).every(Boolean) ? contractFields : null;
+}
+
+async function signContractWithFields(interaction, ticket, contractFields) {
+  const settings = getSystemSettings(interaction.guild.id);
+  const queueEntry = getQueueEntry(interaction.channelId);
+  const member = await interaction.guild.members.fetch(ticket.ownerId).catch(() => null);
+  const pricing = getPlanPricing(ticket.type, settings, queueEntry?.couponCode || null, { member });
+  const recurringContractAfterPayment = isRecurringTicketType(ticket.type) && isPaymentConfirmedForHosting(queueEntry, getPayment(interaction.channelId));
+
+  try {
+    validatePagBankCustomer(contractFields, member?.user || interaction.user);
+  } catch (error) {
+    await interaction.editReply(toComponentsV2(error.message));
+    return false;
+  }
+
+  const contract = createContract(interaction.channelId, {
+    guildId: interaction.guild.id,
+    userId: interaction.user.id,
+    userTag: interaction.user.tag,
+    planType: ticket.type,
+    ...contractFields,
+    ip: 'nÃ£o disponÃ­vel no Discord',
+    couponCode: queueEntry?.couponCode || null,
+    couponPercent: queueEntry?.couponPercent || 0,
+    boostDiscountActive: pricing.boostActive,
+    boostDiscountPercent: pricing.boostPercent,
+    basePrice: pricing.base,
+    finalPrice: pricing.final,
+    entryPrice: pricing.final,
+    remainingPrice: 0,
+    paidPrice: pricing.final
+  });
+
+  const updatedQueueEntry = upsertQueueEntry(interaction.channelId, {
+    guildId: interaction.guild.id,
+    ownerId: ticket.ownerId,
+    ownerTag: ticket.ownerTag,
+    plan: planValueFromType(ticket.type),
+    status: recurringContractAfterPayment ? queueEntry?.status || 'payment_confirmed' : 'contract_signed',
+    contractId: contract.id,
+    projectName: contract.projectName,
+    couponCode: contract.couponCode,
+    couponPercent: contract.couponPercent,
+    boostDiscountActive: contract.boostDiscountActive,
+    boostDiscountPercent: contract.boostDiscountPercent,
+    basePrice: contract.basePrice,
+    finalPrice: contract.finalPrice,
+    paidPrice: contract.paidPrice,
+    entryPrice: contract.entryPrice,
+    selectedPaymentAmount: ticket.type === 'plan_monthly' ? contract.paidPrice : queueEntry?.selectedPaymentAmount || null,
+    selectedPaymentPercent: ticket.type === 'plan_monthly' ? 100 : queueEntry?.selectedPaymentPercent || null,
+    remainingPrice: contract.remainingPrice,
+    signedAt: contract.signedAt
+  });
+
+  const pdfPath = await generateContractPdf(contract);
+  const pdfName = `contrato-${contract.id}.pdf`;
+  const contractEmbed = buildSignedContractEmbed(contract);
+  const dmSent = await interaction.user
+    .send({
+      embeds: [contractEmbed],
+      files: [{ attachment: pdfPath, name: pdfName }]
+    })
+    .then(() => true)
+    .catch((error) => {
+      console.warn(`Nao foi possivel enviar contrato em PDF por DM para ${interaction.user.tag}: ${error.message}`);
+      return false;
+    });
+
+  const contractPdfLogChannelId = process.env.CONTRACT_PDF_LOG_CHANNEL_ID || process.env.CONTRACT_LOG_CHANNEL_ID;
+  if (contractPdfLogChannelId) {
+    const logChannel = await interaction.guild.channels.fetch(contractPdfLogChannelId).catch(() => null);
+    if (logChannel?.isTextBased()) {
+      await logChannel.send(toComponentsV2({
+        embeds: [buildSignedContractEmbed(contract)],
+        files: [new AttachmentBuilder(pdfPath, { name: pdfName })]
+      })).catch(() => null);
+    }
+  }
+
+  if (recurringContractAfterPayment) {
+    if (!dmSent) {
+      await interaction.channel.send({
+        content: `${interaction.user}, nÃ£o consegui enviar o contrato no privado. Segue o PDF assinado neste canal.`,
+        files: [{ attachment: pdfPath, name: pdfName }]
+      }).catch((error) => {
+        console.warn(`Nao foi possivel enviar contrato em PDF no canal ${interaction.channelId}: ${error.message}`);
+      });
+    }
+
+    await ensureRecurringContinuationPanel(interaction, updatedQueueEntry);
+    await interaction.editReply(toComponentsV2(
+      dmSent
+        ? 'Contrato enviado no seu privado usando os dados do Pix. Continue pelo proximo botao do painel.'
+        : 'Contrato gerado com os dados do Pix. Nao consegui enviar DM, entao deixei o PDF neste canal. Continue pelo proximo botao do painel.'
+    ));
+    return true;
+  }
+
+  await purgeChannel(interaction.channel);
+
+  await interaction.channel.send(toComponentsV2(
+    ticket.type === 'plan_monthly' ? buildMonthlyPaymentPanel(contract) : buildPreApprovedPanel(contract)
+  ));
+
+  if (!dmSent) {
+    await interaction.channel.send({
+      content: `${interaction.user}, nÃ£o consegui enviar o contrato no privado. Segue o PDF assinado neste canal.`,
+      files: [{ attachment: pdfPath, name: pdfName }]
+    }).catch((error) => {
+      console.warn(`Nao foi possivel enviar contrato em PDF no canal ${interaction.channelId}: ${error.message}`);
+    });
+  }
+
+  await interaction.editReply(toComponentsV2(
+    dmSent
+      ? 'Contrato assinado. O PDF foi enviado no seu privado.'
+      : 'Contrato assinado. NÃ£o consegui enviar DM, mas o documento foi gerado e a etapa foi liberada.'
+  ));
+  return true;
+}
+
 async function handleContractStart(interaction) {
   const ticket = getTicketByChannel(interaction.channelId);
   if (!ticket || !purchaseTypes(ticket.type)) {
@@ -3151,6 +3794,33 @@ async function handleContractStart(interaction) {
   if (ticket.ownerId !== interaction.user.id && !isOwnerRole(interaction.member)) {
     await interaction.reply(privateReply('Apenas o cliente deste atendimento pode assinar o contrato.'));
     return;
+  }
+
+  const queueEntry = getQueueEntry(interaction.channelId);
+  if (isRecurringTicketType(ticket.type)) {
+    if (!isPaymentConfirmedForHosting(queueEntry, getPayment(interaction.channelId))) {
+      await interaction.reply(privateReply('No plano mensal/semanal, o contrato fica disponivel somente depois que o pagamento for confirmado.'));
+      return;
+    }
+
+    const existingContract = getContract(interaction.channelId);
+    if (existingContract) {
+      const signedQueueEntry = {
+        ...(queueEntry || {}),
+        contractId: queueEntry?.contractId || existingContract.id,
+        signedAt: queueEntry?.signedAt || existingContract.signedAt
+      };
+      await ensureRecurringContinuationPanel(interaction, signedQueueEntry);
+      await interaction.reply(privateReply('O contrato ja foi enviado. Continue pelo proximo botao do painel.'));
+      return;
+    }
+
+    const savedContractFields = paymentContractFieldsFromQueue(queueEntry);
+    if (savedContractFields) {
+      await interaction.deferReply({ flags: 64 });
+      await signContractWithFields(interaction, ticket, savedContractFields);
+      return;
+    }
   }
 
   await interaction.showModal(buildContractModal());
@@ -3174,6 +3844,19 @@ async function handleContractSubmit(interaction, setup) {
   const queueEntry = getQueueEntry(interaction.channelId);
   const member = await interaction.guild.members.fetch(ticket.ownerId).catch(() => null);
   const pricing = getPlanPricing(ticket.type, settings, queueEntry?.couponCode || null, { member });
+  const recurringContractAfterPayment = isRecurringTicketType(ticket.type) && isPaymentConfirmedForHosting(queueEntry, getPayment(interaction.channelId));
+  const existingRecurringContract = recurringContractAfterPayment ? getContract(interaction.channelId) : null;
+  if (existingRecurringContract) {
+    const signedQueueEntry = {
+      ...(queueEntry || {}),
+      contractId: queueEntry?.contractId || existingRecurringContract.id,
+      signedAt: queueEntry?.signedAt || existingRecurringContract.signedAt
+    };
+    await ensureRecurringContinuationPanel(interaction, signedQueueEntry);
+    await interaction.editReply(toComponentsV2('O contrato ja foi enviado. Continue pelo proximo botao do painel.'));
+    return;
+  }
+
   const contractFields = {
     fullName: interaction.fields.getTextInputValue('fullName'),
     cpf: interaction.fields.getTextInputValue('cpf'),
@@ -3207,12 +3890,12 @@ async function handleContractSubmit(interaction, setup) {
     paidPrice: pricing.final
   });
 
-  upsertQueueEntry(interaction.channelId, {
+  const updatedQueueEntry = upsertQueueEntry(interaction.channelId, {
     guildId: interaction.guild.id,
     ownerId: ticket.ownerId,
     ownerTag: ticket.ownerTag,
     plan: planValueFromType(ticket.type),
-    status: 'contract_signed',
+    status: recurringContractAfterPayment ? queueEntry?.status || 'payment_confirmed' : 'contract_signed',
     contractId: contract.id,
     projectName: contract.projectName,
     couponCode: contract.couponCode,
@@ -3223,6 +3906,8 @@ async function handleContractSubmit(interaction, setup) {
     finalPrice: contract.finalPrice,
     paidPrice: contract.paidPrice,
     entryPrice: contract.entryPrice,
+    selectedPaymentAmount: ticket.type === 'plan_monthly' ? contract.paidPrice : queueEntry?.selectedPaymentAmount || null,
+    selectedPaymentPercent: ticket.type === 'plan_monthly' ? 100 : queueEntry?.selectedPaymentPercent || null,
     remainingPrice: contract.remainingPrice,
     signedAt: contract.signedAt
   });
@@ -3241,21 +3926,41 @@ async function handleContractSubmit(interaction, setup) {
       return false;
     });
 
-  const logAttachment = new AttachmentBuilder(pdfPath, { name: pdfName });
-  const contractLogChannelId = process.env.CONTRACT_LOG_CHANNEL_ID;
-  if (contractLogChannelId) {
-    const logChannel = await interaction.guild.channels.fetch(contractLogChannelId).catch(() => null);
+  const contractPdfLogChannelId = process.env.CONTRACT_PDF_LOG_CHANNEL_ID || process.env.CONTRACT_LOG_CHANNEL_ID;
+  if (contractPdfLogChannelId) {
+    const logChannel = await interaction.guild.channels.fetch(contractPdfLogChannelId).catch(() => null);
     if (logChannel?.isTextBased()) {
       await logChannel.send(toComponentsV2({
         embeds: [buildSignedContractEmbed(contract)],
-        files: [logAttachment]
+        files: [new AttachmentBuilder(pdfPath, { name: pdfName })]
       })).catch(() => null);
     }
   }
 
+  if (recurringContractAfterPayment) {
+    if (!dmSent) {
+      await interaction.channel.send({
+        content: `${interaction.user}, não consegui enviar o contrato no privado. Segue o PDF assinado neste canal.`,
+        files: [{ attachment: pdfPath, name: pdfName }]
+      }).catch((error) => {
+        console.warn(`Nao foi possivel enviar contrato em PDF no canal ${interaction.channelId}: ${error.message}`);
+      });
+    }
+
+    await ensureRecurringContinuationPanel(interaction, updatedQueueEntry);
+    await interaction.editReply(toComponentsV2(
+      dmSent
+        ? 'Contrato enviado no seu privado. Continue pelo proximo botao do painel.'
+        : 'Contrato gerado. Nao consegui enviar DM, entao deixei o PDF neste canal. Continue pelo proximo botao do painel.'
+    ));
+    return;
+  }
+
   await purgeChannel(interaction.channel);
 
-  await interaction.channel.send(toComponentsV2(buildPreApprovedPanel(contract)));
+  await interaction.channel.send(toComponentsV2(
+    ticket.type === 'plan_monthly' ? buildMonthlyPaymentPanel(contract) : buildPreApprovedPanel(contract)
+  ));
 
   if (!dmSent) {
     await interaction.channel.send({
@@ -3311,7 +4016,7 @@ async function createSupportCall(guild, setup, member) {
           allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.Connect, PermissionFlagsBits.Speak]
         }))
     ],
-    reason: `Call de suporte do plano Pro para ${member.user.tag}`
+    reason: `Call de suporte para ${member.user.tag}`
   }).catch(() => null);
 }
 
@@ -3476,7 +4181,7 @@ async function handleCouponClear(interaction, setup) {
 
   clearSystemCoupon(interaction.guild.id, interaction.user.id);
   await publishAllConfiguredPanels(interaction.guild, setup);
-  await safeReply(interaction, privateReply('Cupom removido com sucesso.'));
+  await safeReply(interaction, buildSystemToolPromptPayload('Cupom removido com sucesso.'));
   return true;
 }
 
@@ -3575,7 +4280,7 @@ async function handleHostingAdminSubmit(interaction, setup, isPaid) {
       return true;
     }
 
-    await safeReply(interaction, privateReply(`Hospedagem marcada como paga para ${clientRecord.userTag || clientRecord.userId}.`));
+    await safeReply(interaction, buildSystemToolPromptPayload(`Hospedagem marcada como paga para ${clientRecord.userTag || clientRecord.userId}.`));
     return true;
   }
 
@@ -3583,7 +4288,7 @@ async function handleHostingAdminSubmit(interaction, setup, isPaid) {
     reason: 'Marcação manual de hospedagem vencida',
     byUserId: interaction.user.id
   });
-  await safeReply(interaction, privateReply(`Hospedagem marcada como vencida para ${clientRecord.userTag || clientRecord.userId}.`));
+  await safeReply(interaction, buildSystemToolPromptPayload(`Hospedagem marcada como vencida para ${clientRecord.userTag || clientRecord.userId}.`));
   return true;
 }
 
@@ -3608,11 +4313,9 @@ async function handleHostingAdminUserSelect(interaction, isPaid) {
       return true;
     }
 
-    await safeUpdate(interaction, {
-      content: `Hospedagem marcada como paga para ${clientRecord.userTag || `<@${userId}>`}.`,
-      embeds: [],
-      components: []
-    });
+    await safeUpdate(interaction, buildSystemToolPromptUpdate(
+      `Hospedagem marcada como paga para ${clientRecord.userTag || `<@${userId}>`}.`
+    ));
     return true;
   }
 
@@ -3621,11 +4324,9 @@ async function handleHostingAdminUserSelect(interaction, isPaid) {
     byUserId: interaction.user.id
   });
 
-  await safeUpdate(interaction, {
-    content: `Hospedagem marcada como vencida para ${clientRecord.userTag || `<@${userId}>`}.`,
-    embeds: [],
-    components: []
-  });
+  await safeUpdate(interaction, buildSystemToolPromptUpdate(
+    `Hospedagem marcada como vencida para ${clientRecord.userTag || `<@${userId}>`}.`
+  ));
   return true;
 }
 
@@ -3695,11 +4396,9 @@ async function handleClientPlanSelect(interaction, setup) {
     return true;
   }
 
-  await safeUpdate(interaction, {
-    content: `Plano de <@${userId}> alterado para **${planLabel(plan)}**.`,
-    embeds: [],
-    components: []
-  });
+  await safeUpdate(interaction, buildSystemToolPromptUpdate(
+    `Plano de <@${userId}> alterado para **${planLabel(plan)}**.`
+  ));
   return true;
 }
 
@@ -3812,13 +4511,10 @@ async function handleClientDeleteUserSelect(interaction, setup) {
       .setTimestamp()
   );
 
-  await safeReply(interaction, {
-    content:
-      `Cadastro apagado para ${clientRecord.userTag || `<@${userId}>`}. O cargo voltou para Futuro Cliente e o canal do projeto foi removido.` +
-      (dmSent ? '\nDM de despedida enviada.' : '\nNão consegui enviar DM. O aviso foi enviado no canal antes da exclusão.'),
-    embeds: [],
-    components: []
-  });
+  await safeReply(interaction, buildSystemToolPromptPayload(
+    `Cadastro apagado para ${clientRecord.userTag || `<@${userId}>`}. O cargo voltou para Futuro Cliente e o canal do projeto foi removido.` +
+      (dmSent ? '\nDM de despedida enviada.' : '\nNão consegui enviar DM. O aviso foi enviado no canal antes da exclusão.')
+  ));
   return true;
 }
 
@@ -3887,6 +4583,7 @@ async function handleHostingAccessCreateSubmit(interaction) {
   }
 
   const projectName = botName || queueEntry.projectName || ticket.ownerTag;
+  const recurringSupport = isRecurringSupportPlan(ticket.type || queueEntry.plan);
   let accessKey = generateAccessKey(projectName);
   for (let attempt = 0; attempt < 20; attempt += 1) {
     if (!findClientByAccessKey(interaction.guild.id, accessKey)) break;
@@ -3903,6 +4600,13 @@ async function handleHostingAccessCreateSubmit(interaction) {
   }
 
   const projectChannel = await ensureProjectChannel(interaction.guild, resolveGuildSetup(interaction.guild) || {}, member.user, projectName);
+  if (recurringSupport) {
+    await projectChannel.permissionOverwrites.edit(member.id, {
+      ViewChannel: true,
+      SendMessages: true,
+      ReadMessageHistory: true
+    }).catch(() => null);
+  }
 
   upsertQueueEntry(interaction.channelId, {
     guildId: interaction.guild.id,
@@ -3918,7 +4622,7 @@ async function handleHostingAccessCreateSubmit(interaction) {
     accessPasswordSalt: salt,
     accessKeyCreatedAt: new Date().toISOString(),
     accessKeyCreatedBy: interaction.user.id,
-    accessGranted: false,
+    accessGranted: recurringSupport,
     hostingStatus: 'current',
     hostingPaymentStatus: 'paid',
     hostingCycle,
@@ -3936,7 +4640,7 @@ async function handleHostingAccessCreateSubmit(interaction) {
     accessKey,
     accessPasswordHash: hash,
     accessPasswordSalt: salt,
-    status: 'pending_access',
+    status: recurringSupport ? 'active' : 'pending_access',
     hostingStatus: 'current',
     hostingPaymentStatus: 'paid',
     hostingCycle,
@@ -3944,9 +4648,11 @@ async function handleHostingAccessCreateSubmit(interaction) {
     hostingGraceUntil: getHostingGraceDeadline(dueAt).toISOString(),
     hostingReminderCycle: null,
     hostingKeyCreatedAt: new Date().toISOString(),
-    hostingKeyCreatedBy: interaction.user.id
+    hostingKeyCreatedBy: interaction.user.id,
+    accessGranted: recurringSupport,
+    accessGrantedAt: recurringSupport ? new Date().toISOString() : null
   });
-  await saveHostingRegistrationPermission(interaction.guild, {
+  const hostingPermission = await syncPaidHostingPermission(interaction.guild, {
     guildId: interaction.guild.id,
     userId: ticket.ownerId,
     userTag: ticket.ownerTag,
@@ -3959,10 +4665,25 @@ async function handleHostingAccessCreateSubmit(interaction) {
     hostingDueAt: dueAt.toISOString(),
     hostingGraceUntil: getHostingGraceDeadline(dueAt).toISOString()
   }, {
-    allowed: true,
-    status: 'paid',
+    force: true,
     reason: 'Pagamento confirmado e cadastro criado'
-  }).catch(() => null);
+  });
+  const facTokenResult = await deliverFivemFacPanelToken({
+    guild: interaction.guild,
+    member,
+    planType: ticket.type,
+    clientRecord: {
+      guildId: interaction.guild.id,
+      userId: ticket.ownerId,
+      userTag: ticket.ownerTag,
+      plan: planValueFromType(ticket.type),
+      projectName,
+      accessKey,
+      projectChannelId: projectChannel.id,
+      hostingStatus: 'current',
+      hostingPaymentStatus: 'paid'
+    }
+  });
 
   if (member?.user) {
     const accessDm = buildAccessApprovalDm({
@@ -3994,13 +4715,32 @@ async function handleHostingAccessCreateSubmit(interaction) {
       .setTimestamp()
   );
 
-  await projectChannel.send(toComponentsV2(buildProjectAccessPanel({
-    ...queueEntry,
-    channelId: interaction.channelId,
-    projectName,
-    accessKey,
-    projectChannelId: projectChannel.id
-  }))).catch(() => null);
+  if (recurringSupport) {
+    await setupRecurringSupportAccess(
+      interaction.guild,
+      resolveGuildSetup(interaction.guild) || {},
+      member,
+      getQueueEntry(interaction.channelId) || queueEntry,
+      interaction.channelId,
+      projectChannel
+    );
+  } else {
+    await projectChannel.send(toComponentsV2(buildProjectAccessPanel({
+      ...queueEntry,
+      channelId: interaction.channelId,
+      projectName,
+      accessKey,
+      projectChannelId: projectChannel.id
+    }))).catch(() => null);
+    await projectChannel.send(toComponentsV2({
+      content: `<@${ticket.ownerId}> sua chave de acesso: \`${accessKey}\`. Use a senha que voce acabou de cadastrar para liberar o canal.`
+    })).catch(() => null);
+  }
+  if (facTokenResult.ok) {
+    await projectChannel.send(toComponentsV2('Codigo de liberacao enviado ao cliente por DM.')).catch(() => null);
+  } else if (!facTokenResult.skipped && isFivemFacPlan(ticket.type)) {
+    await projectChannel.send(toComponentsV2('Cadastro criado, mas nao consegui gerar o codigo de liberacao. Verifique HOSTING_API_URL e ORVITEK_HOSTING_BOT_TOKEN.')).catch(() => null);
+  }
 
   updateTicket(interaction.channelId, {
     status: 'moved_to_production',
@@ -4009,7 +4749,11 @@ async function handleHostingAccessCreateSubmit(interaction) {
     projectChannelId: projectChannel.id
   });
 
-  await interaction.editReply(toComponentsV2(`Cadastro criado com sucesso. Chave e senha foram enviadas por DM e o canal de producao foi aberto: ${projectChannel}. Este ticket sera apagado em 5 segundos.`));
+  await interaction.editReply(toComponentsV2(
+    recurringSupport
+      ? `Cadastro criado com sucesso. O canal, a call e o suporte foram liberados: ${projectChannel}. Este ticket sera apagado em 5 segundos.${hostingPermission.ok ? '' : '\n\nAtenção: não consegui confirmar a liberação no bot de hospedagem. Tente novamente pelo painel ou avise a equipe.'}`
+      : `Cadastro criado com sucesso. Chave e senha foram enviadas por DM e o canal de producao foi aberto: ${projectChannel}. Este ticket sera apagado em 5 segundos.${hostingPermission.ok ? '' : '\n\nAtenção: não consegui confirmar a liberação no bot de hospedagem. Tente novamente pelo painel ou avise a equipe.'}`
+  ));
   setTimeout(() => interaction.channel.delete('Ticket movido para suporte de producao').catch(() => null), 5000);
   return true;
 
@@ -4133,7 +4877,7 @@ async function handleAccessUnlockSubmit(interaction) {
     accessSuspendedForPasswordReset: false
   });
 
-  await saveHostingRegistrationPermission(guild, {
+  await syncPaidHostingPermission(guild, {
     ...queueEntry,
     userId: interaction.user.id,
     userTag: interaction.user.tag,
@@ -4141,11 +4885,20 @@ async function handleAccessUnlockSubmit(interaction) {
     hostingStatus: 'current',
     hostingPaymentStatus: 'paid'
   }, {
-    allowed: true,
-    status: 'paid',
+    force: true,
     reason: 'Acesso do projeto liberado'
   }).catch(() => null);
-  await interaction.reply(toComponentsV2({ content: 'Acesso liberado com sucesso. Você já pode ver o canal do projeto.' }));
+
+  const recurringSupport = isRecurringSupportPlan(queueEntry.plan || queueEntry.type);
+  const supportSetup = recurringSupport
+    ? await setupRecurringSupportAccess(guild, setup, member, queueEntry, channelId, channel)
+    : null;
+
+  await interaction.reply(toComponentsV2({
+    content: recurringSupport
+      ? 'Acesso liberado com sucesso. A call e o sistema de suporte foram liberados no canal do projeto.'
+      : 'Acesso liberado com sucesso. Você já pode ver o canal do projeto.'
+  }));
   await sendDmPanel(
     interaction.user,
     buildAccessUnlockedDm({
@@ -4155,13 +4908,22 @@ async function handleAccessUnlockSubmit(interaction) {
     })
   );
 
-  await channel.send(toComponentsV2(buildProjectDeadlinePanel({ ...queueEntry, channelId }))).catch(() => null);
+  if (!recurringSupport) {
+    await channel.send(toComponentsV2(buildProjectDeadlinePanel({ ...queueEntry, channelId }))).catch(() => null);
+  } else if (supportSetup?.callChannel) {
+    await interaction.followUp(toComponentsV2({ content: `Call de suporte liberada: ${supportSetup.callChannel}.` })).catch(() => null);
+  }
+
   await channel.send(toComponentsV2({
     embeds: [
       new EmbedBuilder()
         .setColor(colors.default)
         .setTitle('✅ Acesso liberado')
-        .setDescription(`<@${interaction.user.id}> agora pode visualizar e enviar mensagens neste canal.`)
+        .setDescription(
+          recurringSupport
+            ? `<@${interaction.user.id}> agora pode usar o canal, a call e o suporte deste projeto.`
+            : `<@${interaction.user.id}> agora pode visualizar e enviar mensagens neste canal.`
+        )
         .setTimestamp()
     ]
   })).catch(() => null);
@@ -4739,6 +5501,8 @@ async function handleSystemPanelSubmit(interaction, setup) {
     updateSystemSettings(interaction.guild.id, { prices: { lifetime: value } });
   } else if (interaction.customId === 'panel_price_fivem_fac_submit') {
     updateSystemSettings(interaction.guild.id, { prices: { fivemFac: value } });
+  } else if (interaction.customId === 'panel_price_monthly_submit') {
+    updateSystemSettings(interaction.guild.id, { prices: { monthly: value } });
   } else if (interaction.customId === 'panel_price_hosting_submit') {
     updateSystemSettings(interaction.guild.id, { prices: { hosting: value } });
   } else {
@@ -4746,7 +5510,7 @@ async function handleSystemPanelSubmit(interaction, setup) {
   }
 
   await publishAllConfiguredPanels(interaction.guild, setup);
-  await safeReply(interaction, privateReply(`Valor atualizado com sucesso para ${brl(value)}.`));
+  await safeReply(interaction, buildSystemToolPromptPayload(`Valor atualizado com sucesso para ${brl(value)}.`));
   return true;
 }
 
@@ -4773,7 +5537,7 @@ async function handleCouponCreateSubmit(interaction, setup) {
   });
 
   await publishAllConfiguredPanels(interaction.guild, setup);
-  await safeReply(interaction, privateReply(`Cupom ${code.toUpperCase()} cadastrado com ${percent}% de desconto.`));
+  await safeReply(interaction, buildSystemToolPromptPayload(`Cupom ${code.toUpperCase()} cadastrado com ${percent}% de desconto.`));
   return true;
 }
 
@@ -4798,7 +5562,7 @@ async function handleBoostDiscountSubmit(interaction, setup) {
   });
 
   await publishAllConfiguredPanels(interaction.guild, setup);
-  await safeReply(interaction, privateReply(percent > 0
+  await safeReply(interaction, buildSystemToolPromptPayload(percent > 0
     ? `Desconto de boost atualizado para ${percent}%. Ele só será aplicado em quem tem boost ativo no servidor.`
     : 'Desconto de boost desativado.'
   ));
@@ -4828,7 +5592,7 @@ async function handlePixQrSubmit(interaction, setup) {
     }
   });
 
-  await safeReply(interaction, privateReply('QR Code Pix cadastrado e modo de pagamento alterado para QR Code manual.'));
+  await safeReply(interaction, buildSystemToolPromptPayload('QR Code Pix cadastrado e modo de pagamento alterado para QR Code manual.'));
   return true;
 }
 
@@ -4871,7 +5635,7 @@ async function handlePixQrUpload(interaction) {
     }
   });
 
-  await interaction.followUp(privateReply('QR Code Pix salvo por upload e modo de pagamento alterado para QR Code manual.'));
+  await interaction.followUp(buildSystemToolPromptPayload('QR Code Pix salvo por upload e modo de pagamento alterado para QR Code manual.'));
   return true;
 }
 
@@ -4898,7 +5662,7 @@ async function handlePixKeySubmit(interaction, setup) {
     }
   });
 
-  await safeReply(interaction, privateReply('Chave Pix cadastrada e modo de pagamento alterado para chave Pix manual.'));
+  await safeReply(interaction, buildSystemToolPromptPayload('Chave Pix cadastrada e modo de pagamento alterado para chave Pix manual.'));
   return true;
 }
 
@@ -4958,12 +5722,12 @@ async function restoreStaticPanel(guild, channelId, options = {}) {
   }
 
   if (setup.channels?.plans === channelId) {
-    await replaceStaticPanelMessage(channel, buildPlanSelectionPanelPayload(guild.id)).catch(() => null);
+    await replaceStaticPanelMessage(channel, buildPlanPanelPayloadForChannel(guild.id, channelId, setup)).catch(() => null);
     return true;
   }
 
   if (setup.channels?.buyNow === channelId) {
-    await replaceStaticPanelMessage(channel, buildPlanSelectionPanelPayload(guild.id)).catch(() => null);
+    await replaceStaticPanelMessage(channel, buildPlanPanelPayloadForChannel(guild.id, channelId, setup)).catch(() => null);
     return true;
   }
 
@@ -5088,6 +5852,11 @@ async function handleButton(interaction) {
     return true;
   }
 
+  if (interaction.customId === 'payment_customer_start') {
+    await handlePaymentCustomerStart(interaction);
+    return true;
+  }
+
   if (interaction.customId === 'coupon_apply') {
     await handleCouponApply(interaction);
     return true;
@@ -5167,11 +5936,9 @@ async function handleSelect(interaction) {
       }
     });
 
-    await safeUpdate(interaction, {
-      content: `Modo de pagamento atualizado para **${paymentModeLabel(settings.payment.mode)}**.`,
-      embeds: [],
-      components: []
-    });
+    await safeUpdate(interaction, buildSystemToolPromptUpdate(
+      `Modo de pagamento atualizado para **${paymentModeLabel(settings.payment.mode)}**.`
+    ));
     return true;
   }
 
@@ -5282,6 +6049,11 @@ async function handleModal(interaction) {
     return true;
   }
 
+  if (interaction.customId === 'payment_customer_submit') {
+    await handlePaymentCustomerSubmit(interaction);
+    return true;
+  }
+
   if (interaction.customId === 'panel_coupon_create_submit') {
     await handleCouponCreateSubmit(interaction, setup);
     return true;
@@ -5317,6 +6089,7 @@ async function handleModal(interaction) {
     interaction.customId === 'panel_price_premium_submit' ||
     interaction.customId === 'panel_price_lifetime_submit' ||
     interaction.customId === 'panel_price_fivem_fac_submit' ||
+    interaction.customId === 'panel_price_monthly_submit' ||
     interaction.customId === 'panel_price_hosting_submit'
   ) {
     await handleSystemPanelSubmit(interaction, setup);

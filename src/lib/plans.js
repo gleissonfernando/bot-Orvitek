@@ -28,6 +28,10 @@ function getBoostDiscountPercent(settings = {}) {
 }
 
 function basePriceForPlan(planType, prices) {
+  if (planType === 'plan_monthly') {
+    return Number(prices.monthly ?? prices.hosting ?? 12);
+  }
+
   if (planType === 'plan_fivem_fac') {
     return Number(prices.fivemFac ?? 150);
   }
@@ -45,7 +49,7 @@ function basePriceForPlan(planType, prices) {
 
 function getPlanPricing(planType, settings = {}, couponCode = null, options = {}) {
   const activeSettings = settings || {};
-  const prices = activeSettings.prices || { basic: 50, premium: 250, lifetime: 450, fivemFac: 150, hosting: 12 };
+  const prices = activeSettings.prices || { basic: 50, premium: 250, lifetime: 450, fivemFac: 150, hosting: 12, monthly: 12 };
   const base = basePriceForPlan(planType, prices);
   const promotionPercent = planType === 'plan_pro' || planType === 'plan_lifetime' ? 30 : 20;
   const promotionActive = Boolean(activeSettings.retail?.active);
@@ -108,6 +112,7 @@ function buildPlansEmbeds(input = {}) {
   const premiumPrice = priceLine(prices.premium, 30, promotionActive);
   const lifetimePrice = priceLine(prices.lifetime ?? 450, 30, promotionActive);
   const fivemFacPrice = priceLine(prices.fivemFac ?? 150, 20, promotionActive);
+  const monthlyPrice = `${brl(prices.monthly ?? prices.hosting ?? 12)}/mês`;
   const promoText = promotionActive
     ? '\n\n🔥 **Promoção ativa:** Básico com 20% OFF e Premium com 30% OFF.'
     : '';
@@ -135,6 +140,7 @@ function buildPlansEmbeds(input = {}) {
         { name: 'Premium', value: `${premiumPrice}\nSistema completo com tickets, automod, relatórios, clientes e /ativar.`, inline: true },
         { name: 'Vitalício', value: `${lifetimePrice}\nPlano completo com acesso vitalício ao bot contratado.`, inline: true },
         { name: 'FiveM FAC', value: `${fivemFacPrice}\nBot e estrutura para facção FiveM operar com registro, tickets e hierarquia.`, inline: true },
+        { name: 'Plano Mensal', value: `${monthlyPrice}\nHospedagem inclusa, cupom ativo aceito, contrato, pagamento mensal e liberação por código após criar senha.`, inline: true },
         { name: 'Hospedagem', value: `${brl(prices.hosting)}/mês\nOpcional, mantém o bot online 24h.`, inline: true }
       )
       .setFooter({ text: 'Escolha um plano pelo botão abaixo. Hospedagem não entra no desconto promocional.' }),
@@ -256,6 +262,29 @@ function buildPlansEmbeds(input = {}) {
 
     new EmbedBuilder()
       .setColor(colors.default)
+      .setTitle('Plano Mensal')
+      .setDescription(
+        `**${monthlyPrice}**\n\n` +
+          'Para clientes que querem pagar mensalmente com hospedagem inclusa, contrato, pagamento Pix e liberacao controlada depois da criacao da senha.'
+      )
+      .addFields(
+        {
+          name: 'Fluxo incluso',
+          value:
+            '✅ Ticket em categoria Plano Mensal\n' +
+            '✅ Contrato enviado automaticamente\n' +
+            '✅ Cupom aplicado antes do contrato\n' +
+            '✅ Pagamento mensal pelo sistema configurado\n' +
+            '✅ Hospedagem inclusa no valor mensal\n' +
+            '✅ Chave de acesso enviada ao cliente\n' +
+            '✅ Codigo de liberacao gerado apos criar senha'
+        },
+        { name: 'Organizacao', value: 'Os tickets mensais sao separados em categorias de ate 10 canais.' }
+      )
+      .setFooter({ text: 'Indicado para assinatura mensal com liberacao controlada.' }),
+
+    new EmbedBuilder()
+      .setColor(colors.default)
       .setTitle('Hospedagem e entrega')
       .setDescription(
         `**Hospedagem opcional: ${brl(prices.hosting)}/mês**\n` +
@@ -282,7 +311,8 @@ function buildPlansButtons() {
       new ButtonBuilder().setCustomId('plan_basic').setLabel('Contratar Básico').setStyle(ButtonStyle.Secondary),
       new ButtonBuilder().setCustomId('plan_pro').setLabel('Contratar Premium').setStyle(ButtonStyle.Success),
       new ButtonBuilder().setCustomId('plan_lifetime').setLabel('Contratar Vitalício').setStyle(ButtonStyle.Secondary),
-      new ButtonBuilder().setCustomId('plan_fivem_fac').setLabel('Contratar FiveM FAC').setStyle(ButtonStyle.Primary)
+      new ButtonBuilder().setCustomId('plan_fivem_fac').setLabel('Contratar FiveM FAC').setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId('plan_monthly').setLabel('Plano Mensal').setStyle(ButtonStyle.Secondary)
     )
   ];
 }

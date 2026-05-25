@@ -1,6 +1,9 @@
 const { MongoClient } = require('mongodb');
+const crypto = require('node:crypto');
 
 const DEFAULT_TIMEOUT_MS = 10000;
+const FIVEM_FAC_TOKEN_DIGITS = 4;
+const FIVEM_FAC_TOKEN_SPACE = 10 ** FIVEM_FAC_TOKEN_DIGITS;
 const mongoUri = process.env.MONGODB_URI || process.env.MONGO_URI || '';
 const mongoDbName = process.env.MONGODB_DB_NAME || 'orvitek';
 const hostingEventsCollectionName = process.env.MONGODB_HOSTING_EVENTS_COLLECTION || 'hosting_shutdown_events';
@@ -35,6 +38,30 @@ function getConfig() {
     token,
     timeoutMs: Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : DEFAULT_TIMEOUT_MS
   };
+}
+
+function getHostingApiBaseUrl() {
+  return (process.env.HOSTING_API_URL || process.env.HOSTING_BOT_API_URL || '').trim().replace(/\/+$/, '');
+}
+
+function getFivemFacTokenEndpoint() {
+  const baseUrl = getHostingApiBaseUrl();
+  return baseUrl ? `${baseUrl}/api/orvitek/fivem-fac-token` : '';
+}
+
+function generateFourDigitToken(excluded = new Set()) {
+  for (let attempt = 0; attempt < FIVEM_FAC_TOKEN_SPACE; attempt += 1) {
+    const token = String(crypto.randomInt(0, FIVEM_FAC_TOKEN_SPACE)).padStart(FIVEM_FAC_TOKEN_DIGITS, '0');
+    if (!excluded.has(token)) {
+      return token;
+    }
+  }
+
+  return null;
+}
+
+function isConflictResponse(response, body) {
+  return response.status === 409 || /\b(conflict|conflito|already exists|ja existe|já existe)\b/i.test(String(body || ''));
 }
 
 function isHostingBotNotifierConfigured() {
@@ -473,8 +500,122 @@ async function notifyHostingBotShutdown(guild, clientRecord, options = {}) {
   };
 }
 
+async function createFivemFacPanelToken(guild, clientRecord = {}, options = {}) {
+  if (!isHostingBotNotifierEnabled()) {
+    debugLog('Token FAC nao enviado para o bot de hospedagem', {
+      reason: 'ORVITEK_HOSTING_BOT_ENABLED desativado',
+      guildId: guild?.id,
+      userId: clientRecord?.userId
+    });
+    return { ok: false, skipped: true, reason: 'ORVITEK_HOSTING_BOT_ENABLED desativado' };
+  }
+
+  const endpoint = getFivemFacTokenEndpoint();
+  const token = (process.env.ORVITEK_HOSTING_BOT_TOKEN || '').trim();
+  const timeoutMs = getConfig().timeoutMs;
+  const targetGuildId = String(
+    options.guildId ||
+      clientRecord.hostedGuildId ||
+      clientRecord.targetGuildId ||
+      clientRecord.customerGuildId ||
+      clientRecord.guildId ||
+      guild?.id ||
+      ''
+  ).trim();
+
+  if (!endpoint) {
+    return { ok: false, skipped: true, reason: 'HOSTING_API_URL nao configurada' };
+  }
+
+  if (!token) {
+    return { ok: false, skipped: true, reason: 'ORVITEK_HOSTING_BOT_TOKEN nao configurado' };
+  }
+
+  if (!targetGuildId) {
+    return { ok: false, skipped: true, reason: 'guildId do servidor hospedado nao informado' };
+  }
+
+  const tried = new Set();
+  for (let attempt = 1; attempt <= FIVEM_FAC_TOKEN_SPACE; attempt += 1) {
+    const panelToken = generateFourDigitToken(tried);
+    if (!panelToken) break;
+    tried.add(panelToken);
+
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), timeoutMs);
+
+    try {
+      const response = await fetch(endpoint, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+          'User-Agent': 'Orvitek-Bots/1.0'
+        },
+        body: JSON.stringify({
+          guildId: targetGuildId,
+          token: panelToken,
+          userId: clientRecord?.userId || null,
+          createdBy: 'orvitek-main-bot'
+        }),
+        signal: controller.signal
+      });
+
+      const responseText = await response.text().catch(() => '');
+      if (response.ok) {
+        debugLog('Token FAC criado no bot de hospedagem', {
+          endpoint,
+          guildId: targetGuildId,
+          userId: clientRecord?.userId,
+          attempt
+        });
+        return {
+          ok: true,
+          token: panelToken,
+          guildId: targetGuildId,
+          status: response.status,
+          attempts: attempt
+        };
+      }
+
+      if (isConflictResponse(response, responseText)) {
+        debugLog('Token FAC ja existia, tentando outro codigo', {
+          endpoint,
+          guildId: targetGuildId,
+          status: response.status,
+          attempt
+        });
+        continue;
+      }
+
+      return {
+        ok: false,
+        status: response.status,
+        body: responseText.slice(0, 500),
+        guildId: targetGuildId
+      };
+    } catch (error) {
+      return {
+        ok: false,
+        error: error.name === 'AbortError' ? 'timeout' : error.message,
+        guildId: targetGuildId
+      };
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
+  return {
+    ok: false,
+    reason: 'Nao ha codigo FAC de 4 digitos disponivel sem conflito',
+    guildId: targetGuildId,
+    attempts: tried.size
+  };
+}
+
 module.exports = {
   buildShutdownPayload,
+  createFivemFacPanelToken,
   deleteHostingRegistrationPermission,
   isHostingBotNotifierEnabled,
   isHostingBotNotifierConfigured,

@@ -8,7 +8,7 @@ const { saveGuildSetup } = require('./store');
 const { buildSupportRulesEmbeds } = require('./supportRules');
 const { buildServerRulesEmbeds } = require('./serverRules');
 const { buildHowItWorksEmbeds } = require('./howItWorks');
-const { buildPlanSelectionPanelPayload } = require('./planSelectionPanel');
+const { buildLifetimePlanPanelPayload, buildMonthlyPlanPanelPayload } = require('./planSelectionPanel');
 const { replacePanelMessage } = require('./panelUtils');
 const { buildRenewPanelPayload, buildSuggestionsPanelPayload, buildTicketPanelPayload } = require('./staticPanels');
 const { toComponentsV2 } = require('./componentsV2');
@@ -134,11 +134,11 @@ async function sendPanels(guildId, channels, report) {
   }
 
   if (channels.plans?.isTextBased()) {
-    await replacePanelMessage(channels.plans, buildPlanSelectionPanelPayload(guildId));
+    await replacePanelMessage(channels.plans, buildMonthlyPlanPanelPayload(guildId));
   }
 
   if (channels.buyNow?.isTextBased()) {
-    await replacePanelMessage(channels.buyNow, buildPlanSelectionPanelPayload(guildId));
+    await replacePanelMessage(channels.buyNow, buildLifetimePlanPanelPayload(guildId));
     report.created.panels.push('Compra');
   }
 
