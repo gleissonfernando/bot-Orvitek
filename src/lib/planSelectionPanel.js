@@ -28,7 +28,7 @@ const DEFAULT_SUPPORT_ROLE_ID = '1505184193766752386';
 const COMPONENTS_V2 = MessageFlags.IsComponentsV2;
 const EPHEMERAL_COMPONENTS_V2 = MessageFlags.Ephemeral | MessageFlags.IsComponentsV2;
 const SALES_BANNER_FILE_NAME = 'orvitek-bots-banner.png';
-const SALES_BANNER_PATH = path.join(process.cwd(), 'assets', SALES_BANNER_FILE_NAME);
+const SALES_BANNER_PATH = path.join(__dirname, '..', '..', 'assets', SALES_BANNER_FILE_NAME);
 const SALES_BANNER_URL = `attachment://${SALES_BANNER_FILE_NAME}`;
 
 const selecaoMap = new Map();
@@ -331,7 +331,11 @@ function buildLifetimePlanPanelPayload(guildId = null) {
 }
 
 function buildPlanPanelPayloadForChannel(guildId = null, channelId = null, setup = {}) {
-  if (channelId && (channelId === process.env.LIFETIME_PLAN_CHANNEL_ID || channelId === setup?.channels?.buyNow)) {
+  if (channelId && (
+    channelId === process.env.LIFETIME_PLAN_CHANNEL_ID ||
+    channelId === process.env.BUY_NOW_CHANNEL_ID ||
+    channelId === setup?.channels?.buyNow
+  )) {
     return buildLifetimePlanPanelPayload(guildId);
   }
 

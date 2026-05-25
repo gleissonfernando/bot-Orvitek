@@ -32,14 +32,14 @@ client.once(Events.ClientReady, async () => {
 
   published.push(await publishPanel(
     guild,
-    process.env.MONTHLY_PLAN_CHANNEL_ID || setup?.channels?.plans,
+    process.env.MONTHLY_PLAN_CHANNEL_ID || process.env.PLAN_PANEL_CHANNEL_ID || process.env.CANAL_ID || setup?.channels?.plans,
     buildMonthlyPlanPanelPayload(guild.id),
     'Painel mensal'
   ));
 
   published.push(await publishPanel(
     guild,
-    process.env.LIFETIME_PLAN_CHANNEL_ID || setup?.channels?.buyNow,
+    process.env.LIFETIME_PLAN_CHANNEL_ID || process.env.BUY_NOW_CHANNEL_ID || setup?.channels?.buyNow,
     buildLifetimePlanPanelPayload(guild.id),
     'Painel vitalicio'
   ));

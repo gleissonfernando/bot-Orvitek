@@ -11,6 +11,9 @@ const PANEL_TITLES = [
   'Plano Vitalício',
   'Plano FiveM FAC',
   'Hospedagem e entrega',
+  'Central de Suporte',
+  'Renovacao de Plano',
+  '💎 Promoção VIP',
   'Promoção ativada',
   'Promoção desativada'
 ];

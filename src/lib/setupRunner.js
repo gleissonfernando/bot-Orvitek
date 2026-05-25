@@ -4,13 +4,19 @@ const {
   PermissionFlagsBits
 } = require('discord.js');
 const { categories, colors, roleSpecs, staffRoleKeys } = require('../config/setup');
-const { saveGuildSetup } = require('./store');
+const { getSystemSettings, saveGuildSetup } = require('./store');
 const { buildSupportRulesEmbeds } = require('./supportRules');
 const { buildServerRulesEmbeds } = require('./serverRules');
 const { buildHowItWorksEmbeds } = require('./howItWorks');
+const { buildPromotionEmbed } = require('./plans');
 const { buildLifetimePlanPanelPayload, buildMonthlyPlanPanelPayload } = require('./planSelectionPanel');
 const { replacePanelMessage } = require('./panelUtils');
-const { buildRenewPanelPayload, buildSuggestionsPanelPayload, buildTicketPanelPayload } = require('./staticPanels');
+const {
+  buildRenewPanelPayload,
+  buildSuggestionsPanelPayload,
+  buildTicketPanelPayload,
+  buildVipPromotionPanelPayload
+} = require('./staticPanels');
 const { toComponentsV2 } = require('./componentsV2');
 
 function rolePermissions(roleIds, roleKeys, allowSend = true) {
@@ -121,6 +127,8 @@ async function getOrCreateChannel(guild, category, roleIds, spec, report) {
 }
 
 async function sendPanels(guildId, channels, report) {
+  const settings = getSystemSettings(guildId);
+
   if (channels.rules?.isTextBased()) {
     await replacePanelMessage(channels.rules, { embeds: buildServerRulesEmbeds() });
   }
@@ -140,6 +148,16 @@ async function sendPanels(guildId, channels, report) {
   if (channels.buyNow?.isTextBased()) {
     await replacePanelMessage(channels.buyNow, buildLifetimePlanPanelPayload(guildId));
     report.created.panels.push('Compra');
+  }
+
+  if (channels.promotions?.isTextBased()) {
+    await replacePanelMessage(channels.promotions, { embeds: [buildPromotionEmbed(settings.retail.active)] });
+    report.created.panels.push('Promoções');
+  }
+
+  if (channels.vipOnly?.isTextBased()) {
+    await replacePanelMessage(channels.vipOnly, buildVipPromotionPanelPayload(settings));
+    report.created.panels.push('VIP');
   }
 
   await replacePanelMessage(channels.openTicket, buildTicketPanelPayload());

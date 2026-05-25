@@ -5,6 +5,7 @@ const {
   ButtonStyle,
   ChannelType,
   EmbedBuilder,
+  MessageFlags,
   ModalBuilder,
   PermissionFlagsBits,
   StringSelectMenuBuilder,
@@ -86,7 +87,12 @@ const {
   handleReceiptModalSubmit
 } = require('./planSelectionPanel');
 const { replacePanelMessage } = require('./panelUtils');
-const { buildRenewPanelPayload, buildSuggestionsPanelPayload, buildTicketPanelPayload } = require('./staticPanels');
+const {
+  buildRenewPanelPayload,
+  buildSuggestionsPanelPayload,
+  buildTicketPanelPayload,
+  buildVipPromotionPanelPayload
+} = require('./staticPanels');
 const {
   buildPixPaymentFromOrder,
   consultOrder,
@@ -199,10 +205,28 @@ function resolveGuildSetup(guild) {
 async function safeReply(interaction, payload) {
   try {
     const nextPayload = toComponentsV2(payload);
-    if (interaction.replied || interaction.deferred) {
+    if (interaction.deferred && !interaction.replied) {
+      await interaction.editReply(nextPayload);
+    } else if (interaction.replied || interaction.deferred) {
       await interaction.followUp(nextPayload);
     } else {
       await interaction.reply(nextPayload);
+    }
+    return true;
+  } catch (error) {
+    if (isUnknownInteraction(error)) {
+      console.warn(`Interação expirada ignorada: ${interaction.customId || interaction.commandName || interaction.id}`);
+      return false;
+    }
+    throw error;
+  }
+}
+
+async function safeDeferReply(interaction, options = {}) {
+  try {
+    if (!interaction.replied && !interaction.deferred) {
+      const payload = options.ephemeral === false ? {} : { flags: MessageFlags.Ephemeral };
+      await interaction.deferReply(payload);
     }
     return true;
   } catch (error) {
@@ -1778,28 +1802,6 @@ function buildSystemToolPromptUpdate(message) {
   };
 }
 
-function buildVipPromotionEmbed(settings) {
-  const coupon = settings?.coupon?.active && settings?.coupon?.code ? settings.coupon : null;
-  const promotionActive = Boolean(settings?.retail?.active);
-  const boostPercent = getBoostDiscountPercent(settings);
-
-  return new EmbedBuilder()
-    .setColor(coupon || promotionActive ? colors.purple : colors.gray)
-    .setTitle(coupon || promotionActive ? '💎 Promoção VIP ativa' : '💎 Promoção VIP')
-    .setDescription(
-      coupon
-        ? `O sistema de cupom está ativo.\n\nUse o cupom **\`${coupon.code}\`** para receber **${coupon.percent}% OFF**.`
-        : 'No momento não há cupom ativo para exibir neste canal.'
-    )
-    .addFields(
-      { name: 'Desconto de boost', value: boostPercent > 0 ? `${boostPercent}% OFF enquanto o boost estiver ativo.` : 'Desativado.', inline: true },
-      { name: 'Cupom', value: coupon ? `\`${coupon.code}\`` : 'Nenhum', inline: true },
-      { name: 'Porcentagem do cupom', value: coupon ? `${coupon.percent}% OFF` : '0%', inline: true }
-    )
-    .setFooter({ text: 'O desconto final é calculado no contrato conforme os benefícios ativos.' })
-    .setTimestamp();
-}
-
 function buildTicketReasonModal(type) {
   const modal = new ModalBuilder()
     .setCustomId(`ticket_reason:${type}`)
@@ -1935,9 +1937,7 @@ async function publishSalesPanels(guild, setup, options = {}) {
   }
 
   if (vipOnlyChannel?.isTextBased()) {
-    await replaceStaticPanelMessage(vipOnlyChannel, {
-      embeds: [buildVipPromotionEmbed(settings)]
-    }).catch(() => null);
+    await replaceStaticPanelMessage(vipOnlyChannel, buildVipPromotionPanelPayload(settings)).catch(() => null);
   }
 }
 
@@ -1951,21 +1951,51 @@ async function replaceConfiguredPanel(guild, channelId, payload) {
   return true;
 }
 
+function pushUniqueChannelId(targets, seen, channelId, payload) {
+  const id = String(channelId || '').trim();
+  if (!id || seen.has(id)) return;
+  seen.add(id);
+  targets.push({ channelId: id, payload });
+}
+
+async function publishSystemControlPanel(guild, settings = getSystemSettings(guild.id)) {
+  const channelId = settings.ui?.systemPanelChannelId;
+  if (!channelId) return false;
+
+  return replaceConfiguredPanel(guild, channelId, {
+    embeds: [buildSystemPanelEmbed(guild)],
+    components: buildSystemPanelButtons()
+  });
+}
+
 async function publishAllConfiguredPanels(guild, setup) {
+  const activeSetup = setup || resolveGuildSetup(guild) || {};
   const settings = getSystemSettings(guild.id);
   let published = 0;
+  const seen = new Set();
+  const salesTargets = [];
 
-  if (await replaceConfiguredPanel(guild, setup.channels?.verify, buildVerificationPanel())) published += 1;
-  if (await replaceConfiguredPanel(guild, setup.channels?.rules, { embeds: buildServerRulesEmbeds() })) published += 1;
-  if (await replaceConfiguredPanel(guild, setup.channels?.howItWorks, { embeds: buildHowItWorksEmbeds() })) published += 1;
-  if (await replaceConfiguredPanel(guild, setup.channels?.supportRules, { embeds: buildSupportRulesEmbeds() })) published += 1;
-  if (await replaceConfiguredPanel(guild, setup.channels?.plans, buildMonthlyPlanPanelPayload(guild.id))) published += 1;
-  if (await replaceConfiguredPanel(guild, setup.channels?.buyNow, buildLifetimePlanPanelPayload(guild.id))) published += 1;
-  if (await replaceConfiguredPanel(guild, setup.channels?.promotions, { embeds: [buildPromotionEmbed(settings.retail.active)] })) published += 1;
-  if (await replaceConfiguredPanel(guild, setup.channels?.vipOnly, { embeds: [buildVipPromotionEmbed(settings)] })) published += 1;
-  if (await replaceConfiguredPanel(guild, setup.channels?.openTicket, buildTicketPanelPayload())) published += 1;
-  if (await replaceConfiguredPanel(guild, setup.channels?.renewPlan, buildRenewPanelPayload())) published += 1;
-  if (await replaceConfiguredPanel(guild, setup.channels?.suggestions, buildSuggestionsPanelPayload())) published += 1;
+  pushUniqueChannelId(salesTargets, seen, process.env.MONTHLY_PLAN_CHANNEL_ID, buildMonthlyPlanPanelPayload(guild.id));
+  pushUniqueChannelId(salesTargets, seen, process.env.PLAN_PANEL_CHANNEL_ID, buildMonthlyPlanPanelPayload(guild.id));
+  pushUniqueChannelId(salesTargets, seen, process.env.CANAL_ID, buildMonthlyPlanPanelPayload(guild.id));
+  pushUniqueChannelId(salesTargets, seen, activeSetup?.channels?.plans, buildMonthlyPlanPanelPayload(guild.id));
+  pushUniqueChannelId(salesTargets, seen, process.env.LIFETIME_PLAN_CHANNEL_ID, buildLifetimePlanPanelPayload(guild.id));
+  pushUniqueChannelId(salesTargets, seen, process.env.BUY_NOW_CHANNEL_ID, buildLifetimePlanPanelPayload(guild.id));
+  pushUniqueChannelId(salesTargets, seen, activeSetup?.channels?.buyNow, buildLifetimePlanPanelPayload(guild.id));
+
+  if (await replaceConfiguredPanel(guild, activeSetup?.channels?.verify, buildVerificationPanel())) published += 1;
+  if (await replaceConfiguredPanel(guild, activeSetup?.channels?.rules, { embeds: buildServerRulesEmbeds() })) published += 1;
+  if (await replaceConfiguredPanel(guild, activeSetup?.channels?.howItWorks, { embeds: buildHowItWorksEmbeds() })) published += 1;
+  if (await replaceConfiguredPanel(guild, activeSetup?.channels?.supportRules, { embeds: buildSupportRulesEmbeds() })) published += 1;
+  for (const target of salesTargets) {
+    if (await replaceConfiguredPanel(guild, target.channelId, target.payload)) published += 1;
+  }
+  if (await replaceConfiguredPanel(guild, activeSetup?.channels?.promotions, { embeds: [buildPromotionEmbed(settings.retail.active)] })) published += 1;
+  if (await replaceConfiguredPanel(guild, activeSetup?.channels?.vipOnly, buildVipPromotionPanelPayload(settings))) published += 1;
+  if (await replaceConfiguredPanel(guild, activeSetup?.channels?.openTicket, buildTicketPanelPayload())) published += 1;
+  if (await replaceConfiguredPanel(guild, activeSetup?.channels?.renewPlan, buildRenewPanelPayload())) published += 1;
+  if (await replaceConfiguredPanel(guild, activeSetup?.channels?.suggestions, buildSuggestionsPanelPayload())) published += 1;
+  if (await publishSystemControlPanel(guild, settings)) published += 1;
   return published;
 }
 
@@ -2063,8 +2093,9 @@ async function handleSystemPanelButton(interaction, setup, selectedTool = intera
   }
 
   if (selectedTool === 'panel_refresh_sales') {
+    await safeDeferReply(interaction);
     const published = await publishAllConfiguredPanels(interaction.guild, setup);
-    await safeReply(interaction, buildSystemToolPromptPayload(`Painéis republicados: ${published}.`));
+    await safeReply(interaction, buildSystemToolPromptPayload(`Painéis republicados: ${published}. As mudanças atuais já foram aplicadas.`));
     return true;
   }
 
@@ -6499,18 +6530,23 @@ async function restoreStaticPanel(guild, channelId, options = {}) {
     return true;
   }
 
-  if (setup.channels?.plans === channelId) {
+  if ([process.env.MONTHLY_PLAN_CHANNEL_ID, process.env.PLAN_PANEL_CHANNEL_ID, process.env.CANAL_ID, setup.channels?.plans].includes(channelId)) {
     await replaceStaticPanelMessage(channel, buildPlanPanelPayloadForChannel(guild.id, channelId, setup)).catch(() => null);
     return true;
   }
 
-  if (setup.channels?.buyNow === channelId) {
+  if ([process.env.LIFETIME_PLAN_CHANNEL_ID, process.env.BUY_NOW_CHANNEL_ID, setup.channels?.buyNow].includes(channelId)) {
     await replaceStaticPanelMessage(channel, buildPlanPanelPayloadForChannel(guild.id, channelId, setup)).catch(() => null);
     return true;
   }
 
   if (setup.channels?.promotions === channelId) {
     await replaceStaticPanelMessage(channel, { embeds: [buildPromotionEmbed(settings.retail.active)] }).catch(() => null);
+    return true;
+  }
+
+  if (setup.channels?.vipOnly === channelId) {
+    await replaceStaticPanelMessage(channel, buildVipPromotionPanelPayload(settings)).catch(() => null);
     return true;
   }
 

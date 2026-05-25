@@ -38,7 +38,7 @@ client.once(Events.ClientReady, async () => {
     {
       channel: await findConfiguredChannel(
         guild,
-        process.env.MONTHLY_PLAN_CHANNEL_ID || setup?.channels?.plans,
+        process.env.MONTHLY_PLAN_CHANNEL_ID || process.env.PLAN_PANEL_CHANNEL_ID || process.env.CANAL_ID || setup?.channels?.plans,
         ['plano-mensal', 'mensal']
       ),
       payload: buildMonthlyPlanPanelPayload(guild.id),
@@ -47,7 +47,7 @@ client.once(Events.ClientReady, async () => {
     {
       channel: await findConfiguredChannel(
         guild,
-        process.env.LIFETIME_PLAN_CHANNEL_ID || setup?.channels?.buyNow,
+        process.env.LIFETIME_PLAN_CHANNEL_ID || process.env.BUY_NOW_CHANNEL_ID || setup?.channels?.buyNow,
         ['plano-vitalicio', 'vitalicio']
       ),
       payload: buildLifetimePlanPanelPayload(guild.id),
