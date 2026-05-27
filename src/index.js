@@ -9,7 +9,8 @@ const {
   handleModal,
   publishHostingReminder,
   deleteHostingAccess,
-  restoreDeletedPanel
+  restoreDeletedPanel,
+  scheduleEmptyPurchaseTicketCategoryCleanup
 } = require('./lib/interactions');
 const { isOwnerRole } = require('./lib/permissions');
 const { privateReply } = require('./lib/replies');
@@ -429,6 +430,24 @@ client.on(Events.MessageCreate, async (message) => {
 client.on(Events.MessageDelete, async (message) => {
   try {
     await restoreDeletedPanel(message);
+  } catch (error) {
+    console.error(error);
+  }
+});
+
+client.on(Events.ChannelDelete, (channel) => {
+  try {
+    scheduleEmptyPurchaseTicketCategoryCleanup(channel.guild, channel.parentId);
+  } catch (error) {
+    console.error(error);
+  }
+});
+
+client.on(Events.ChannelUpdate, (oldChannel, newChannel) => {
+  try {
+    if (oldChannel.parentId && oldChannel.parentId !== newChannel.parentId) {
+      scheduleEmptyPurchaseTicketCategoryCleanup(oldChannel.guild, oldChannel.parentId);
+    }
   } catch (error) {
     console.error(error);
   }

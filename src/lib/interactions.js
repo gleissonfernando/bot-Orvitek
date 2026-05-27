@@ -5,10 +5,13 @@ const {
   ButtonStyle,
   ChannelType,
   EmbedBuilder,
+  FileUploadBuilder,
+  LabelBuilder,
   MessageFlags,
   ModalBuilder,
   PermissionFlagsBits,
   StringSelectMenuBuilder,
+  TextDisplayBuilder,
   TextInputBuilder,
   TextInputStyle,
   UserSelectMenuBuilder
@@ -279,6 +282,19 @@ const ticketSlugs = {
   plan_paid: 'comprovante',
   renew_now: 'renovacao',
   renew_check: 'verificar-renovacao'
+};
+
+const TICKET_MODAL_CUSTOM_ID = 'ticket_modal';
+const TICKET_MODAL_PREFIX = `${TICKET_MODAL_CUSTOM_ID}:`;
+const TICKET_ATTACHMENT_CUSTOM_ID = 'ticket_assunto';
+const TICKET_COUPON_CUSTOM_ID = 'ticket_coupon';
+const purchaseTicketCategoryNames = {
+  plan_basic: 'plano basico',
+  plan_pro: 'plano profissional',
+  plan_lifetime: 'plano vitalicio',
+  plan_fivem_fac: 'plano fivem fac',
+  plan_monthly: 'plano mensal',
+  plan_paid: 'comprovante'
 };
 
 function channelSafe(value) {
@@ -1081,8 +1097,11 @@ function buildContractCorrectionActions() {
   ];
 }
 
-function buildRecurringPaymentIntroPanel(ticket, settings = {}) {
-  const pricing = getPlanPricing(ticket.type, settings, null);
+function buildRecurringPaymentIntroPanel(ticket, settings = {}, queueEntry = {}) {
+  const pricing = getPlanPricing(ticket.type, settings, queueEntry?.couponCode || null);
+  const couponField = queueEntry?.couponCode
+    ? [{ name: 'Cupom aplicado', value: `${queueEntry.couponCode} (-${queueEntry.couponPercent || 0}%)`, inline: true }]
+    : [];
 
   return {
     embeds: [
@@ -1096,7 +1115,8 @@ function buildRecurringPaymentIntroPanel(ticket, settings = {}) {
         .addFields(
           { name: 'Plano', value: planLabel(ticket.type), inline: true },
           { name: 'Valor', value: brl(pricing.final), inline: true },
-          { name: 'Contrato', value: 'Opcional apos pagamento', inline: true }
+          { name: 'Contrato', value: 'Opcional apos pagamento', inline: true },
+          ...couponField
         )
         .setTimestamp()
     ],
@@ -1818,6 +1838,110 @@ function buildTicketReasonModal(type) {
 
   modal.addComponents(new ActionRowBuilder().addComponents(reason));
   return modal;
+}
+
+function hasActiveCoupon(settings = {}) {
+  return Boolean(settings.coupon?.active && settings.coupon?.code);
+}
+
+function buildPurchaseTicketModal(type, settings = {}) {
+  const upload = new FileUploadBuilder()
+    .setCustomId(TICKET_ATTACHMENT_CUSTOM_ID)
+    .setMinValues(0)
+    .setMaxValues(1)
+    .setRequired(false);
+
+  const coupon = new TextInputBuilder()
+    .setCustomId(TICKET_COUPON_CUSTOM_ID)
+    .setPlaceholder('Digite seu cupom, se tiver')
+    .setStyle(TextInputStyle.Short)
+    .setRequired(false)
+    .setMaxLength(30);
+
+  const modal = new ModalBuilder()
+    .setCustomId(`${TICKET_MODAL_PREFIX}${type}`)
+    .setTitle('Abrir Novo Ticket')
+    .addTextDisplayComponents(
+      new TextDisplayBuilder().setContent(
+        `Compra selecionada: **${planLabel(type)}**\n` +
+          'O ticket sera enviado para a area correta do plano. O comprovante e opcional.'
+      )
+    )
+    .addLabelComponents(
+      new LabelBuilder()
+        .setLabel('Enviar comprovante')
+        .setDescription('Opcional: envie print ou comprovante se ja tiver.')
+        .setFileUploadComponent(upload),
+      ...(hasActiveCoupon(settings)
+        ? [
+            new LabelBuilder()
+              .setLabel('Cupom de desconto')
+              .setDescription('Opcional: informe o cupom ativo para aplicar no valor.')
+              .setTextInputComponent(coupon)
+          ]
+        : [])
+    );
+
+  return modal;
+}
+
+function firstUploadedFile(files) {
+  if (!files) return null;
+  if (typeof files.first === 'function') return files.first() || null;
+  if (Array.isArray(files)) return files[0] || null;
+  if (typeof files.values === 'function') return files.values().next().value || null;
+  return null;
+}
+
+function getOptionalUploadedFiles(interaction, customId) {
+  try {
+    return interaction.fields.getUploadedFiles(customId, false);
+  } catch (error) {
+    return null;
+  }
+}
+
+function getOptionalTextInputValue(interaction, customId) {
+  try {
+    return interaction.fields.getTextInputValue(customId)?.trim() || '';
+  } catch (error) {
+    return '';
+  }
+}
+
+async function handlePurchaseTicketModalSubmit(interaction, setup) {
+  const [, type = 'plan_paid'] = interaction.customId.split(':');
+  if (!purchaseTypes(type) || !ticketLabels[type]) {
+    await interaction.reply(privateReply('Tipo de compra invalido.'));
+    return true;
+  }
+
+  const settings = getSystemSettings(interaction.guild.id);
+  const member = interaction.member || await interaction.guild.members.fetch(interaction.user.id).catch(() => null);
+  const rawCoupon = getOptionalTextInputValue(interaction, TICKET_COUPON_CUSTOM_ID).toUpperCase();
+  const activeCoupon = settings.coupon?.active && settings.coupon?.code ? settings.coupon : null;
+
+  if (rawCoupon && (!activeCoupon || String(activeCoupon.code).trim().toLowerCase() !== rawCoupon.toLowerCase())) {
+    await interaction.reply(privateReply('Cupom invalido ou inativo. O ticket nao foi aberto. Confira o codigo e tente abrir a compra novamente.'));
+    return true;
+  }
+
+  const pricing = getPlanPricing(type, settings, rawCoupon || null, { member });
+  const attachment = firstUploadedFile(getOptionalUploadedFiles(interaction, TICKET_ATTACHMENT_CUSTOM_ID));
+  const ticketForm = {
+    areaLabel: planLabel(type),
+    basePrice: pricing.base,
+    finalPrice: pricing.final,
+    couponCode: pricing.couponMatches ? pricing.coupon.code : null,
+    couponPercent: pricing.couponMatches ? pricing.coupon.percent : 0,
+    boostDiscountActive: pricing.boostActive,
+    boostDiscountPercent: pricing.boostPercent,
+    attachmentName: attachment?.name || null,
+    attachmentUrl: attachment?.url || null
+  };
+
+  await openTicket(interaction, setup, type, 'Compra iniciada pelo painel.', ticketForm);
+  return true;
 }
 
 function buildPriceModal(customId, label, value) {
@@ -2865,12 +2989,51 @@ async function verifyMember(interaction, setup) {
   }
 }
 
-async function resolveMonthlyPlanCategory(guild, setup, type) {
-  if (type !== 'plan_monthly') {
+function purchaseTicketCategoryBaseName(type) {
+  const categoryName = purchaseTicketCategoryNames[type];
+  if (!categoryName) return null;
+  return `${categoryName} - ${ticketSlugs[type] || 'compra'}`;
+}
+
+function isManagedPurchaseTicketCategory(channel) {
+  if (!channel || channel.type !== ChannelType.GuildCategory) return false;
+
+  const name = String(channel.name || '').toLowerCase();
+  return Object.keys(purchaseTicketCategoryNames).some((type) => {
+    const baseName = purchaseTicketCategoryBaseName(type);
+    return baseName && (name === baseName || name.startsWith(`${baseName} `));
+  });
+}
+
+async function cleanupEmptyPurchaseTicketCategory(guild, categoryId) {
+  if (!guild || !categoryId) return false;
+
+  const category = await guild.channels.fetch(categoryId).catch(() => null);
+  if (!isManagedPurchaseTicketCategory(category)) return false;
+
+  const childrenCount = guild.channels.cache.filter((channel) => channel.parentId === category.id).size;
+  if (childrenCount > 0 || !category.deletable) return false;
+
+  await category.delete('Categoria de tickets de compra vazia').catch(() => null);
+  return true;
+}
+
+function scheduleEmptyPurchaseTicketCategoryCleanup(guild, categoryId, delayMs = 1500) {
+  if (!guild || !categoryId) return;
+
+  setTimeout(() => {
+    cleanupEmptyPurchaseTicketCategory(guild, categoryId).catch((error) => {
+      console.warn(`Falha ao limpar categoria de tickets vazia ${categoryId}: ${error.message}`);
+    });
+  }, delayMs).unref?.();
+}
+
+async function resolveTicketCategory(guild, setup, type) {
+  const baseName = purchaseTypes(type) ? purchaseTicketCategoryBaseName(type) : null;
+  if (!baseName) {
     return setup.categories.supportCategory || null;
   }
 
-  const baseName = `plano mensal - ${ticketSlugs[type] || 'mensal'}`;
   const categories = guild.channels.cache
     .filter((channel) => channel.type === ChannelType.GuildCategory && channel.name.toLowerCase().startsWith(baseName))
     .sort((a, b) => a.position - b.position);
@@ -2891,13 +3054,13 @@ async function resolveMonthlyPlanCategory(guild, setup, type) {
       { id: everyoneRoleId, deny: [PermissionFlagsBits.ViewChannel] },
       ...staffOverwrites(guild, setup)
     ],
-    reason: 'Categoria para tickets de Plano Mensal'
+    reason: `Categoria para tickets de ${planLabel(type)}`
   });
 
   return category.id;
 }
 
-async function openTicket(interaction, setup, type, reason = null) {
+async function openTicket(interaction, setup, type, reason = null, ticketForm = null) {
   const settings = getSystemSettings(interaction.guild.id);
   const slug = ticketSlugs[type] || 'suporte';
   const username = channelSafe(interaction.user.username);
@@ -2921,12 +3084,12 @@ async function openTicket(interaction, setup, type, reason = null) {
     }
   }
 
-  const supportCategoryId = await resolveMonthlyPlanCategory(interaction.guild, setup, type);
+  const ticketCategoryId = await resolveTicketCategory(interaction.guild, setup, type);
   const everyoneRoleId = interaction.guild.roles.everyone?.id || interaction.guild.id;
   const channel = await interaction.guild.channels.create({
     name: `suporte-${slug}-${username}`.slice(0, 90),
     type: ChannelType.GuildText,
-    parent: supportCategoryId || null,
+    parent: ticketCategoryId || null,
     permissionOverwrites: [
       { id: everyoneRoleId, deny: [PermissionFlagsBits.ViewChannel] },
       {
@@ -2945,15 +3108,42 @@ async function openTicket(interaction, setup, type, reason = null) {
     ownerTag: interaction.user.tag,
     type
   });
+  if (ticketForm) {
+    updateTicket(channel.id, {
+      ticketForm: {
+        areaLabel: ticketForm.areaLabel || null,
+        basePrice: ticketForm.basePrice || null,
+        finalPrice: ticketForm.finalPrice || null,
+        couponCode: ticketForm.couponCode || null,
+        couponPercent: ticketForm.couponPercent || 0,
+        boostDiscountActive: Boolean(ticketForm.boostDiscountActive),
+        boostDiscountPercent: ticketForm.boostDiscountPercent || 0,
+        attachmentName: ticketForm.attachmentName || null,
+        attachmentUrl: ticketForm.attachmentUrl || null
+      }
+    });
+  }
   const hostingClient = getClient(interaction.guild.id, interaction.user.id);
+  let queueEntry = null;
 
   if (purchaseTypes(type)) {
-    upsertQueueEntry(channel.id, {
+    const fallbackPricing = getPlanPricing(type, settings, null, { member: interaction.member });
+    const basePrice = Number(ticketForm?.basePrice ?? fallbackPricing.base);
+    const finalPrice = Number(ticketForm?.finalPrice ?? fallbackPricing.final);
+    queueEntry = upsertQueueEntry(channel.id, {
       guildId: interaction.guild.id,
       ownerId: interaction.user.id,
       ownerTag: interaction.user.tag,
       plan: planValueFromType(type),
       status: 'opened',
+      basePrice,
+      finalPrice,
+      entryPrice: finalPrice,
+      paidPrice: finalPrice,
+      couponCode: ticketForm?.couponCode || null,
+      couponPercent: ticketForm?.couponPercent || 0,
+      boostDiscountActive: Boolean(ticketForm?.boostDiscountActive),
+      boostDiscountPercent: ticketForm?.boostDiscountPercent || 0,
       createdAt: new Date().toISOString()
     });
   }
@@ -2978,7 +3168,7 @@ async function openTicket(interaction, setup, type, reason = null) {
           `${getTimeGreeting()}, ${interaction.user}.\n\n` +
             'Aguarde nossa equipe te responder.\n\n' +
             (purchaseTypes(type)
-              ? 'Primeiro assine o contrato, depois crie a chave de acesso e gere o Pix PagBank neste canal.\n\nA ativação do bot só é feita depois que o PagBank confirmar o pagamento. Para entrar na fila de produção, siga as instruções do atendimento e aguarde a aprovação. Cada bot tem prazo médio de entrega de até 5 dias após aprovação na fila.'
+              ? 'Primeiro assine o contrato, depois crie a chave de acesso e gere o Pix neste canal.\n\nA ativacao do bot so e feita depois que o pagamento for confirmado. Para entrar na fila de producao, siga as instrucoes do atendimento e aguarde a aprovacao. Cada bot tem prazo medio de entrega de ate 5 dias apos aprovacao na fila.'
               : 'A equipe irá atender você em breve.')
         )
         .addFields(
@@ -2986,9 +3176,13 @@ async function openTicket(interaction, setup, type, reason = null) {
           { name: 'Cliente', value: interaction.user.tag, inline: true },
           { name: 'Canal', value: `Suporte | ${interaction.user.username}` },
           ...(reason ? [{ name: 'Motivo', value: reason.slice(0, 1000) }] : []),
+          ...(ticketForm?.areaLabel ? [{ name: 'Area', value: ticketForm.areaLabel, inline: true }] : []),
+          ...(purchaseTypes(type) ? [{ name: 'Valor final', value: brl(queueEntry?.finalPrice || ticketForm?.finalPrice || 0), inline: true }] : []),
+          ...(ticketForm?.couponCode ? [{ name: 'Cupom', value: `${ticketForm.couponCode} (-${ticketForm.couponPercent || 0}%)`, inline: true }] : []),
+          ...(ticketForm?.attachmentUrl ? [{ name: 'Imagem enviada', value: ticketForm.attachmentUrl.slice(0, 1000) }] : []),
           ...(purchaseTypes(type)
             ? [
-                { name: 'Pagamento', value: 'Pix PagBank gerado aqui no canal.', inline: true },
+                { name: 'Pagamento', value: 'Pix gerado aqui no canal pelo fluxo de pagamento.', inline: true },
                 { name: 'Entrada na fila', value: 'Após confirmação do pagamento integral.', inline: true },
                 { name: 'Prazo médio', value: 'Até 5 dias após aprovação.', inline: true }
               ]
@@ -3013,9 +3207,21 @@ async function openTicket(interaction, setup, type, reason = null) {
     components: purchaseTypes(type) ? [] : buildTicketActions(type, false, Boolean(settings.coupon?.active && settings.coupon?.code))
   }));
 
+  if (ticketForm?.attachmentUrl) {
+    await channel.send(toComponentsV2({
+      embeds: [
+        new EmbedBuilder()
+          .setColor(colors.blue)
+          .setTitle('Imagem enviada no formulario')
+          .setDescription(`Arquivo: ${ticketForm.attachmentName || 'anexo'}`)
+          .setImage(ticketForm.attachmentUrl)
+      ]
+    })).catch(() => null);
+  }
+
   if (purchaseTypes(type)) {
     const panelPayload = isRecurringTicketType(type)
-      ? buildRecurringPaymentIntroPanel(ticket, settings)
+      ? buildRecurringPaymentIntroPanel(ticket, settings, queueEntry)
       : {
           embeds: [buildContractIntroEmbed(ticket, settings)],
           components: buildContractOnlyActions()
@@ -6662,6 +6868,11 @@ async function handleButton(interaction) {
   }
 
   if (ticketLabels[interaction.customId]) {
+    if (purchaseTypes(interaction.customId)) {
+      await interaction.showModal(buildPurchaseTicketModal(interaction.customId, getSystemSettings(interaction.guild.id)));
+      return true;
+    }
+
     if (interaction.customId.startsWith('ticket_')) {
       await interaction.showModal(buildTicketReasonModal(interaction.customId));
       return true;
@@ -6861,6 +7072,11 @@ async function handleModal(interaction) {
     return true;
   }
 
+  if (interaction.customId === TICKET_MODAL_CUSTOM_ID || interaction.customId.startsWith(TICKET_MODAL_PREFIX)) {
+    await handlePurchaseTicketModalSubmit(interaction, setup);
+    return true;
+  }
+
   if (interaction.customId.startsWith('ticket_reason:')) {
     const [, type] = interaction.customId.split(':');
     if (!ticketLabels[type]) {
@@ -6950,5 +7166,6 @@ module.exports = {
   restoreDeletedPanel,
   restoreStaticPanel,
   suppressPanelRestore,
-  sendRatingRequest
+  sendRatingRequest,
+  scheduleEmptyPurchaseTicketCategoryCleanup
 };
