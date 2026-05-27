@@ -1,5 +1,9 @@
 require('dotenv').config();
 
+if (process.env.NODE_TLS_REJECT_UNAUTHORIZED === '0') {
+  delete process.env.NODE_TLS_REJECT_UNAUTHORIZED;
+}
+
 const { Client, Collection, EmbedBuilder, Events, GatewayIntentBits, PermissionFlagsBits } = require('discord.js');
 const commands = require('./commands/setupCommands');
 const { colors, roleSpecs } = require('./config/setup');
