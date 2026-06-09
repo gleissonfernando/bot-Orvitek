@@ -2163,8 +2163,17 @@ function buildTicketActions(type, contractSigned = false, couponAvailable = fals
   return rows;
 }
 
+function isDiscordId(value) {
+  return /^\d{17,20}$/.test(String(value || '').trim());
+}
+
 async function handleSetupButton(interaction) {
-  const [action, ownerId] = interaction.customId.split(':');
+  const [action, ownerId, ownerDiscordId] = interaction.customId.split(':');
+  if (!['setup_confirm', 'setup_cancel'].includes(action)) {
+    await safeReply(interaction, privateReply('Acao de setup invalida.'));
+    return true;
+  }
+
   if (interaction.user.id !== ownerId && !isOwnerRole(interaction.member)) {
     await safeReply(interaction, privateReply('Apenas quem executou o comando ou quem tem o cargo Dono pode responder esta confirmação.'));
     return true;
@@ -2175,13 +2184,22 @@ async function handleSetupButton(interaction) {
     return true;
   }
 
+  if (!isDiscordId(ownerDiscordId)) {
+    await safeUpdate(interaction, {
+      content: 'Confirmacao antiga ou invalida. Execute `/ativar` novamente informando o campo `id_discord`.',
+      embeds: [],
+      components: []
+    });
+    return true;
+  }
+
   const updated = await safeUpdate(interaction, {
     content: 'Configurando o servidor. Isso pode levar alguns instantes...',
     embeds: [],
     components: []
   });
   if (!updated) return true;
-  await runSetup(interaction);
+  await runSetup(interaction, { ownerDiscordId });
   return true;
 }
 
@@ -6838,6 +6856,10 @@ async function handleButton(interaction) {
     return true;
   }
 
+  if (interaction.customId.startsWith('setup_confirm:') || interaction.customId.startsWith('setup_cancel:')) {
+    return handleSetupButton(interaction);
+  }
+
   const setup = resolveGuildSetup(interaction.guild);
   if (!setup) {
     await interaction.reply(privateReply('O servidor ainda não foi configurado com /ativar.'));
@@ -6861,10 +6883,6 @@ async function handleButton(interaction) {
 
   if (interaction.customId.startsWith('panel_')) {
     return handleSystemPanelButton(interaction, setup);
-  }
-
-  if (interaction.customId.startsWith('setup_')) {
-    return handleSetupButton(interaction);
   }
 
   if (ticketLabels[interaction.customId]) {

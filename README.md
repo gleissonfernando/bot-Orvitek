@@ -39,7 +39,8 @@ Copie `.env.example` para `.env` e preencha:
 ```bash
 DISCORD_TOKEN=token_do_bot
 CLIENT_ID=id_da_aplicacao
-GUILD_ID=id_do_servidor
+# Opcional: usado apenas por scripts de um servidor especifico.
+GUILD_ID=
 MONGODB_URI=sua_uri_mongodb
 MONGODB_DB_NAME=orvitek
 PAGBANK_ENV=sandbox
@@ -55,6 +56,8 @@ Para usar pagamento real, configure `PAGBANK_ENV=production` e use o token de pr
 ```bash
 npm run deploy
 ```
+
+O deploy registra os comandos globalmente, entao o `/ativar` fica disponivel em todos os servidores onde o bot estiver instalado. Se voce tiver comandos locais antigos em algum servidor, preencha `GUILD_ID` ou `GUILD_COMMAND_CLEAR_IDS=id1,id2` antes do deploy para limpa-los.
 
 ## Iniciar bot
 
@@ -149,7 +152,7 @@ Para obter o Discord User ID: Discord -> Configurações -> Avançado -> Ativar 
 
 ## Comandos principais
 
-- `/ativar`
+- `/ativar id_discord:<id_do_dono_ou_responsavel>`
 - `/clear`
 - `/clean quantidade:<1-100> [usuario] [canal] [motivo]`
 - `/produto`

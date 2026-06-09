@@ -45,6 +45,13 @@ function isOwnerRole(member) {
     return true;
   }
 
+  if (member.guild?.id) {
+    const setup = getGuildSetup(member.guild.id);
+    if (setup?.ownerDiscordId && member.id === setup.ownerDiscordId) {
+      return true;
+    }
+  }
+
   const configuredOwnerRoleId = process.env.OWNER_ROLE_ID;
 
   if (configuredOwnerRoleId) {

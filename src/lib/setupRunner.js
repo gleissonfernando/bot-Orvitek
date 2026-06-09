@@ -126,6 +126,37 @@ async function getOrCreateChannel(guild, category, roleIds, spec, report) {
   return channel;
 }
 
+async function assignOwnerRole(guild, ownerRole, ownerDiscordId, report) {
+  if (!ownerDiscordId || !ownerRole) {
+    return 'nao configurado';
+  }
+
+  const member = await guild.members.fetch(ownerDiscordId).catch(() => null);
+  if (!member) {
+    report.errors.push(`Dono/responsavel nao encontrado no servidor: ${ownerDiscordId}`);
+    return 'membro nao encontrado';
+  }
+
+  const botMember = guild.members.me || await guild.members.fetchMe().catch(() => null);
+  if (!botMember?.permissions.has(PermissionFlagsBits.ManageRoles)) {
+    report.errors.push('Nao consegui aplicar o cargo Dono: permissao Gerenciar cargos ausente.');
+    return 'sem permissao';
+  }
+
+  if (!ownerRole.editable) {
+    report.errors.push('Nao consegui aplicar o cargo Dono: hierarquia do cargo do bot bloqueia a acao.');
+    return 'hierarquia bloqueada';
+  }
+
+  if (member.roles.cache.has(ownerRole.id)) {
+    return 'ja possuia';
+  }
+
+  await member.roles.add(ownerRole, 'SetupBot /ativar - dono configurado');
+  report.assigned.roles.push(ownerRole.name);
+  return 'aplicado';
+}
+
 async function sendPanels(guildId, channels, report) {
   const settings = getSystemSettings(guildId);
 
@@ -170,10 +201,12 @@ async function sendPanels(guildId, channels, report) {
   report.created.panels.push('Sugestões');
 }
 
-async function runSetup(interaction) {
+async function runSetup(interaction, options = {}) {
   const guild = interaction.guild;
+  const ownerDiscordId = String(options.ownerDiscordId || '').trim() || interaction.user.id;
   const report = {
     created: { roles: [], categories: [], channels: [], panels: [] },
+    assigned: { roles: [] },
     skipped: { roles: [], categories: [], channels: [] },
     errors: []
   };
@@ -184,6 +217,7 @@ async function runSetup(interaction) {
     roles[spec.key] = role;
   }
 
+  const ownerAssignment = await assignOwnerRole(guild, roles.owner, ownerDiscordId, report);
   const roleIds = Object.fromEntries(Object.entries(roles).map(([key, role]) => [key, role.id]));
   const channelMap = {};
   const categoryMap = {};
@@ -200,7 +234,11 @@ async function runSetup(interaction) {
 
   await sendPanels(guild.id, channelMap, report);
 
+  const ownerMember = await guild.members.fetch(ownerDiscordId).catch(() => null);
   const setup = saveGuildSetup(guild.id, {
+    guildId: guild.id,
+    ownerDiscordId,
+    ownerTag: ownerMember?.user?.tag || null,
     roles: roleIds,
     channels: Object.fromEntries(Object.entries(channelMap).map(([key, channel]) => [key, channel.id])),
     categories: categoryMap,
@@ -217,7 +255,10 @@ async function runSetup(interaction) {
       { name: 'Cargos criados', value: String(report.created.roles.length), inline: true },
       { name: 'Painéis enviados', value: String(report.created.panels.length), inline: true },
       { name: '⚙️ Sistemas ativos', value: '6', inline: true },
-      { name: 'Itens já existentes', value: String(report.skipped.roles.length + report.skipped.categories.length + report.skipped.channels.length), inline: true }
+      { name: 'Itens já existentes', value: String(report.skipped.roles.length + report.skipped.categories.length + report.skipped.channels.length), inline: true },
+      { name: 'Servidor', value: `\`${guild.id}\``, inline: true },
+      { name: 'Dono/responsavel', value: `<@${ownerDiscordId}>\n\`${ownerDiscordId}\``, inline: true },
+      { name: 'Cargo Dono', value: ownerAssignment, inline: true }
     )
     .setFooter({ text: `Configurado por ${interaction.user.tag}` })
     .setTimestamp();
