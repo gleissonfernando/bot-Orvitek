@@ -48,7 +48,6 @@ const {
   upsertClient,
   upsertQueueEntry
 } = require('./store');
-const { runSetup } = require('./setupRunner');
 const {
   buildAccessApprovalDm,
   buildAccessUnlockedDm,
@@ -89,6 +88,7 @@ const {
   handlePlanSelection,
   handleReceiptModalSubmit
 } = require('./planSelectionPanel');
+const { isDiscordId, runServerClone } = require('./serverCloner');
 const { replacePanelMessage } = require('./panelUtils');
 const {
   buildRenewPanelPayload,
@@ -115,6 +115,44 @@ const DELIVERED_PROJECT_CATEGORY_ID = process.env.DELIVERED_PROJECT_CATEGORY_ID 
 const CONTRACT_CHANNEL_DELETE_DELAY_MS = 5000;
 
 const restoreSuppression = new Set();
+const cloneSessions = new Map();
+const activeCloneTargets = new Set();
+const activeCloneUsers = new Set();
+const cloneCooldowns = new Map();
+const CLONE_SESSION_TTL_MS = 10 * 60 * 1000;
+const CLONE_COOLDOWN_MS = 60 * 1000;
+const CLONE_DESTINATION_PAGE_SIZE = 25;
+
+function cloneSessionId() {
+  return crypto.randomBytes(8).toString('hex');
+}
+
+function setCloneSession(session) {
+  const current = cloneSessions.get(session.id);
+  if (current?.timeout) clearTimeout(current.timeout);
+
+  const expiresAt = Date.now() + CLONE_SESSION_TTL_MS;
+  const timeout = setTimeout(() => cloneSessions.delete(session.id), CLONE_SESSION_TTL_MS);
+  timeout.unref?.();
+  cloneSessions.set(session.id, { ...session, expiresAt, timeout });
+}
+
+function getCloneSession(sessionId) {
+  const session = cloneSessions.get(sessionId);
+  if (!session) return null;
+  if (Date.now() > session.expiresAt) {
+    clearTimeout(session.timeout);
+    cloneSessions.delete(sessionId);
+    return null;
+  }
+  return session;
+}
+
+function deleteCloneSession(sessionId) {
+  const session = cloneSessions.get(sessionId);
+  if (session?.timeout) clearTimeout(session.timeout);
+  cloneSessions.delete(sessionId);
+}
 
 function suppressPanelRestore(channelId, ttlMs = 10000) {
   restoreSuppression.add(channelId);
@@ -2163,73 +2201,327 @@ function buildTicketActions(type, contractSigned = false, couponAvailable = fals
   return rows;
 }
 
-function isDiscordId(value) {
-  return /^\d{17,20}$/.test(String(value || '').trim());
+function cloneProgressBar(current, total) {
+  const size = 14;
+  const safeTotal = Math.max(1, Number(total || 1));
+  const filled = Math.max(0, Math.min(size, Math.round((Number(current || 0) / safeTotal) * size)));
+  return `[${'#'.repeat(filled)}${'-'.repeat(size - filled)}]`;
 }
 
-async function handleSetupButton(interaction) {
-  const [action, ownerId, ownerDiscordId, sourceGuildId, targetGuildId] = interaction.customId.split(':');
-  if (!['setup_confirm', 'setup_cancel'].includes(action)) {
-    await safeReply(interaction, privateReply('Acao de setup invalida.'));
-    return true;
-  }
+async function botHasAdministrator(guild) {
+  const member = guild.members.me || await guild.members.fetchMe().catch(() => null);
+  return Boolean(member?.permissions?.has(PermissionFlagsBits.Administrator));
+}
 
-  if (interaction.user.id !== ownerId && !isOwnerRole(interaction.member)) {
-    await safeReply(interaction, privateReply('Apenas quem executou o comando ou quem tem o cargo Dono pode responder esta confirmação.'));
-    return true;
-  }
+async function listCloneDestinations(client, userId, sourceGuildId) {
+  const destinations = [];
 
-  if (action === 'setup_cancel') {
-    await safeUpdate(interaction, { content: 'Configuração cancelada.', embeds: [], components: [] });
-    return true;
-  }
+  for (const guild of client.guilds.cache.values()) {
+    if (guild.id === sourceGuildId) continue;
+    if (guild.ownerId !== userId) continue;
+    if (!(await botHasAdministrator(guild))) continue;
 
-  if (![ownerDiscordId, sourceGuildId, targetGuildId].every(isDiscordId)) {
-    await safeUpdate(interaction, {
-      content: 'Confirmacao antiga ou invalida. Execute `/ativar` novamente informando `servidor_origem`, `servidor_destino` e `id_discord`.',
-      embeds: [],
-      components: []
+    destinations.push({
+      id: guild.id,
+      name: guild.name,
+      memberCount: guild.memberCount || 0
     });
+  }
+
+  return destinations.sort((a, b) => a.name.localeCompare(b.name, 'pt-BR'));
+}
+
+function buildCloneDestinationPayload(session, page = 0) {
+  const totalPages = Math.max(1, Math.ceil(session.destinations.length / CLONE_DESTINATION_PAGE_SIZE));
+  const currentPage = Math.max(0, Math.min(page, totalPages - 1));
+  const start = currentPage * CLONE_DESTINATION_PAGE_SIZE;
+  const options = session.destinations.slice(start, start + CLONE_DESTINATION_PAGE_SIZE).map((guild) => ({
+    label: guild.name.slice(0, 100),
+    value: guild.id,
+    description: `ID ${guild.id} | ${guild.memberCount} membros`.slice(0, 100)
+  }));
+
+  const rows = [
+    new ActionRowBuilder().addComponents(
+      new StringSelectMenuBuilder()
+        .setCustomId(`clone_target_select:${session.id}:${currentPage}`)
+        .setPlaceholder('Selecione o servidor destino')
+        .setMinValues(1)
+        .setMaxValues(1)
+        .addOptions(options)
+    )
+  ];
+
+  if (totalPages > 1) {
+    rows.push(
+      new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId(`clone_page:${session.id}:${Math.max(0, currentPage - 1)}`)
+          .setLabel('Anterior')
+          .setStyle(ButtonStyle.Secondary)
+          .setDisabled(currentPage === 0),
+        new ButtonBuilder()
+          .setCustomId(`clone_page:${session.id}:${Math.min(totalPages - 1, currentPage + 1)}`)
+          .setLabel('Proximo')
+          .setStyle(ButtonStyle.Secondary)
+          .setDisabled(currentPage >= totalPages - 1),
+        new ButtonBuilder()
+          .setCustomId(`clone_cancel:${session.id}`)
+          .setLabel('Cancelar')
+          .setStyle(ButtonStyle.Danger)
+      )
+    );
+  } else {
+    rows.push(
+      new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId(`clone_cancel:${session.id}`)
+          .setLabel('Cancelar')
+          .setStyle(ButtonStyle.Danger)
+      )
+    );
+  }
+
+  return {
+    content:
+      `## Selecionar destino\n` +
+      `Origem validada: **${session.sourceGuildName}** (\`${session.sourceGuildId}\`)\n` +
+      `Voce e o proprietario da origem. Abaixo aparecem apenas servidores onde voce tambem e proprietario e onde o bot tem permissao Administrador.\n` +
+      `Pagina ${currentPage + 1}/${totalPages}`,
+    components: rows
+  };
+}
+
+function buildCloneConfirmationPayload(session, targetGuild) {
+  return {
+    content:
+      `## Confirmar clonagem\n` +
+      `Origem/modelo: **${session.sourceGuildName}** (\`${session.sourceGuildId}\`)\n` +
+      `Destino: **${targetGuild.name}** (\`${targetGuild.id}\`)\n` +
+      `Solicitante: <@${session.userId}>\n\n` +
+      `O bot vai copiar cargos, permissoes, categorias, canais de texto, voz, anuncios, foruns, emojis possiveis, ordem da estrutura e visual do servidor.\n` +
+      `Nenhuma clonagem simultanea para este destino sera permitida.`,
+    embeds: [],
+    components: [
+      new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId(`clone_confirm:${session.id}`)
+          .setLabel('Iniciar clonagem')
+          .setStyle(ButtonStyle.Success),
+        new ButtonBuilder()
+          .setCustomId(`clone_cancel:${session.id}`)
+          .setLabel('Cancelar')
+          .setStyle(ButtonStyle.Danger)
+      )
+    ]
+  };
+}
+
+function buildCloneProgressPayload(session, status, report = {}) {
+  const current = report.current || 0;
+  const total = report.total || 1;
+  return {
+    content:
+      `## Clonagem em andamento\n` +
+      `${cloneProgressBar(current, total)} ${current}/${total}\n\n` +
+      `Origem: **${session.sourceGuildName}**\n` +
+      `Destino: **${session.targetGuildName || session.targetGuildId}**\n` +
+      `Status: ${status}`,
+    embeds: [],
+    components: []
+  };
+}
+
+function buildCloneFinalPayload(report) {
+  const createdChannels =
+    report.created.categories +
+    report.created.textChannels +
+    report.created.voiceChannels +
+    report.created.announcementChannels +
+    report.created.forumChannels;
+  const warningText = report.warnings.length
+    ? report.warnings.slice(-8).map((item) => `- ${item}`).join('\n')
+    : 'Nenhum aviso.';
+  const errorText = report.errors.length
+    ? report.errors.slice(-8).map((item) => `- ${item}`).join('\n')
+    : 'Nenhum erro.';
+
+  return {
+    content:
+      `## Relatorio da clonagem\n` +
+      `Status: **${report.status}**\n` +
+      `Origem: **${report.sourceGuildName}** (\`${report.sourceGuildId}\`)\n` +
+      `Destino: **${report.targetGuildName}** (\`${report.targetGuildId}\`)\n\n` +
+      `Cargos clonados: **${report.created.roles}** | pulados: **${report.skipped.roles}**\n` +
+      `Categorias/canais clonados: **${createdChannels}** | canais pulados: **${report.skipped.channels}**\n` +
+      `Emojis clonados: **${report.created.emojis}** | pulados: **${report.skipped.emojis}**\n` +
+      `Config visual aplicada: **${report.created.visualSettings}** item(ns)\n` +
+      `Permissoes de membros ignoradas: **${report.skipped.memberOverwrites}**\n\n` +
+      `**Avisos**\n${warningText}\n\n` +
+      `**Erros**\n${errorText}`,
+    embeds: [],
+    components: []
+  };
+}
+
+async function handleCloneSourceModal(interaction) {
+  const sourceGuildId = interaction.fields.getTextInputValue('source_guild_id').trim();
+  if (!isDiscordId(sourceGuildId)) {
+    await interaction.reply(privateReply('Informe um ID de servidor valido, apenas numeros, com 17 a 20 digitos.'));
     return true;
   }
 
   const sourceGuild = await interaction.client.guilds.fetch(sourceGuildId).catch(() => null);
   if (!sourceGuild) {
-    await safeUpdate(interaction, {
-      content: 'Nao encontrei o servidor de origem. Confirme se o bot esta nele e execute `/ativar` novamente.',
-      embeds: [],
-      components: []
-    });
+    await interaction.reply(privateReply('Nao encontrei o servidor de origem. O bot precisa estar presente nele.'));
+    return true;
+  }
+
+  if (sourceGuild.ownerId !== interaction.user.id) {
+    await interaction.reply(privateReply('Apenas o proprietario do servidor de origem pode iniciar a clonagem.'));
+    return true;
+  }
+
+  if (!(await botHasAdministrator(sourceGuild))) {
+    await interaction.reply(privateReply('O bot precisa de permissao Administrador no servidor de origem para copiar toda a estrutura.'));
+    return true;
+  }
+
+  const destinations = await listCloneDestinations(interaction.client, interaction.user.id, sourceGuild.id);
+  if (!destinations.length) {
+    await interaction.reply(privateReply('Nao encontrei servidores destino elegiveis. O destino precisa ser seu e o bot precisa ter Administrador nele.'));
+    return true;
+  }
+
+  const session = {
+    id: cloneSessionId(),
+    userId: interaction.user.id,
+    sourceGuildId: sourceGuild.id,
+    sourceGuildName: sourceGuild.name,
+    destinations
+  };
+  setCloneSession(session);
+
+  await interaction.reply(privateReply(buildCloneDestinationPayload(session, 0)));
+  return true;
+}
+
+async function handleCloneDestinationSelect(interaction) {
+  const [, sessionId] = interaction.customId.split(':');
+  const session = getCloneSession(sessionId);
+  if (!session || session.userId !== interaction.user.id) {
+    await safeReply(interaction, privateReply('Sessao de clonagem expirada ou invalida. Execute `/ativar` novamente.'));
+    return true;
+  }
+
+  const targetGuildId = interaction.values?.[0];
+  const destination = session.destinations.find((guild) => guild.id === targetGuildId);
+  if (!destination) {
+    await safeReply(interaction, privateReply('Destino invalido para esta sessao.'));
     return true;
   }
 
   const targetGuild = await interaction.client.guilds.fetch(targetGuildId).catch(() => null);
-  if (!targetGuild) {
-    await safeUpdate(interaction, {
-      content: 'Nao encontrei o servidor de destino. Confirme se o bot esta nele e execute `/ativar` novamente.',
-      embeds: [],
-      components: []
-    });
+  if (!targetGuild || targetGuild.ownerId !== interaction.user.id || !(await botHasAdministrator(targetGuild))) {
+    await safeReply(interaction, privateReply('O destino selecionado nao esta mais elegivel para clonagem.'));
     return true;
   }
 
-  const executorInTarget = await targetGuild.members.fetch(interaction.user.id).catch(() => null);
-  if (!executorInTarget?.permissions?.has(PermissionFlagsBits.Administrator)) {
-    await safeUpdate(interaction, {
-      content: 'Voce precisa ser administrador no servidor de destino para confirmar esta ativacao.',
-      embeds: [],
-      components: []
-    });
-    return true;
-  }
-
-  const updated = await safeUpdate(interaction, {
-    content: `Configurando o servidor **${targetGuild.name}**. Isso pode levar alguns instantes...`,
-    embeds: [],
-    components: []
+  setCloneSession({
+    ...session,
+    targetGuildId: targetGuild.id,
+    targetGuildName: targetGuild.name
   });
-  if (!updated) return true;
-  await runSetup(interaction, { ownerDiscordId, sourceGuild, targetGuild });
+
+  await safeUpdate(interaction, buildCloneConfirmationPayload(getCloneSession(sessionId), targetGuild));
+  return true;
+}
+
+async function handleClonePageButton(interaction) {
+  const [, sessionId, pageRaw] = interaction.customId.split(':');
+  const session = getCloneSession(sessionId);
+  if (!session || session.userId !== interaction.user.id) {
+    await safeReply(interaction, privateReply('Sessao de clonagem expirada ou invalida. Execute `/ativar` novamente.'));
+    return true;
+  }
+
+  await safeUpdate(interaction, buildCloneDestinationPayload(session, Number(pageRaw || 0)));
+  return true;
+}
+
+async function handleCloneCancelButton(interaction) {
+  const [, sessionId] = interaction.customId.split(':');
+  const session = getCloneSession(sessionId);
+  if (session && session.userId !== interaction.user.id) {
+    await safeReply(interaction, privateReply('Apenas quem iniciou esta clonagem pode cancelar.'));
+    return true;
+  }
+
+  deleteCloneSession(sessionId);
+  await safeUpdate(interaction, { content: 'Clonagem cancelada.', embeds: [], components: [] });
+  return true;
+}
+
+async function handleCloneConfirmButton(interaction) {
+  const [, sessionId] = interaction.customId.split(':');
+  const session = getCloneSession(sessionId);
+  if (!session || session.userId !== interaction.user.id || !session.targetGuildId) {
+    await safeReply(interaction, privateReply('Sessao de clonagem expirada ou invalida. Execute `/ativar` novamente.'));
+    return true;
+  }
+
+  const now = Date.now();
+  const cooldownUntil = cloneCooldowns.get(interaction.user.id) || 0;
+  if (now < cooldownUntil) {
+    await safeReply(interaction, privateReply('Aguarde alguns instantes antes de iniciar outra clonagem.'));
+    return true;
+  }
+
+  if (activeCloneUsers.has(interaction.user.id) || activeCloneTargets.has(session.targetGuildId)) {
+    await safeReply(interaction, privateReply('Ja existe uma clonagem em andamento para este usuario ou servidor destino.'));
+    return true;
+  }
+
+  const sourceGuild = await interaction.client.guilds.fetch(session.sourceGuildId).catch(() => null);
+  const targetGuild = await interaction.client.guilds.fetch(session.targetGuildId).catch(() => null);
+  if (!sourceGuild || !targetGuild) {
+    await safeReply(interaction, privateReply('Nao consegui localizar origem ou destino. Execute `/ativar` novamente.'));
+    return true;
+  }
+
+  activeCloneUsers.add(interaction.user.id);
+  activeCloneTargets.add(session.targetGuildId);
+  cloneCooldowns.set(interaction.user.id, Date.now() + CLONE_COOLDOWN_MS);
+
+  let lastProgressEdit = 0;
+  await safeUpdate(interaction, buildCloneProgressPayload(session, 'Iniciando...', { current: 0, total: 1 }));
+
+  try {
+    const report = await runServerClone({
+      sourceGuild,
+      targetGuild,
+      userId: interaction.user.id,
+      onProgress: async ({ message, report: currentReport }) => {
+        const shouldEdit = Date.now() - lastProgressEdit > 2500 || currentReport.current >= currentReport.total;
+        if (!shouldEdit) return;
+        lastProgressEdit = Date.now();
+        await interaction.editReply(toComponentsV2(buildCloneProgressPayload(session, message, currentReport))).catch(() => null);
+      }
+    });
+
+    await interaction.editReply(toComponentsV2(buildCloneFinalPayload(report)));
+  } catch (error) {
+    await interaction.editReply(toComponentsV2({
+      content: `Clonagem interrompida: ${error.message}`,
+      embeds: [],
+      components: []
+    })).catch(() => null);
+  } finally {
+    activeCloneUsers.delete(interaction.user.id);
+    activeCloneTargets.delete(session.targetGuildId);
+    deleteCloneSession(sessionId);
+  }
+
   return true;
 }
 
@@ -6886,8 +7178,16 @@ async function handleButton(interaction) {
     return true;
   }
 
-  if (interaction.customId.startsWith('setup_confirm:') || interaction.customId.startsWith('setup_cancel:')) {
-    return handleSetupButton(interaction);
+  if (interaction.customId.startsWith('clone_confirm:')) {
+    return handleCloneConfirmButton(interaction);
+  }
+
+  if (interaction.customId.startsWith('clone_cancel:')) {
+    return handleCloneCancelButton(interaction);
+  }
+
+  if (interaction.customId.startsWith('clone_page:')) {
+    return handleClonePageButton(interaction);
   }
 
   const setup = resolveGuildSetup(interaction.guild);
@@ -6988,6 +7288,10 @@ async function handleSelect(interaction) {
     return handlePlanSelection(interaction);
   }
 
+  if (interaction.customId.startsWith('clone_target_select:')) {
+    return handleCloneDestinationSelect(interaction);
+  }
+
   if (interaction.customId === 'panel_tools') {
     const setup = resolveGuildSetup(interaction.guild);
     if (!setup) {
@@ -7071,6 +7375,10 @@ async function handleSelect(interaction) {
 }
 
 async function handleModal(interaction) {
+  if (interaction.customId === 'clone_source_modal') {
+    return handleCloneSourceModal(interaction);
+  }
+
   if (
     interaction.customId === 'modal_cupom' ||
     interaction.customId === 'modal_comprovante' ||

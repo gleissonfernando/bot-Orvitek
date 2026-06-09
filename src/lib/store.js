@@ -28,6 +28,7 @@ const initialData = {
   payments: {},
   clients: {},
   tickets: {},
+  cloneLogs: [],
   moderation: {},
   ratings: [],
   suggestions: [],
@@ -59,6 +60,7 @@ function mergeDefaults(data) {
       orders: [],
       ...(data.retail || {})
     },
+    cloneLogs: Array.isArray(data.cloneLogs) ? data.cloneLogs : [],
     counters: {
       ...initialData.counters,
       ...(data.counters || {})
@@ -694,6 +696,35 @@ function getReport(guildId) {
   };
 }
 
+function upsertCloneLog(id, payload) {
+  const data = readDatabase();
+  const index = data.cloneLogs.findIndex((entry) => entry.id === id);
+  const record = {
+    ...(index >= 0 ? data.cloneLogs[index] : {}),
+    id,
+    ...payload,
+    updatedAt: nowIso()
+  };
+
+  if (index >= 0) {
+    data.cloneLogs[index] = record;
+  } else {
+    data.cloneLogs.push({
+      ...record,
+      createdAt: record.createdAt || nowIso()
+    });
+  }
+
+  writeDatabase(data);
+  return record;
+}
+
+function listCloneLogs(limit = 50) {
+  return [...readDatabase().cloneLogs]
+    .sort((a, b) => new Date(b.updatedAt || b.createdAt || 0) - new Date(a.updatedAt || a.createdAt || 0))
+    .slice(0, limit);
+}
+
 module.exports = {
   addRating,
   addSuggestion,
@@ -720,6 +751,7 @@ module.exports = {
   getTicketByChannel,
   initializeStore,
   listClients,
+  listCloneLogs,
   listCustomerOrders,
   listOrders,
   listProducts,
@@ -735,6 +767,7 @@ module.exports = {
   updateSystemSettings,
   updatePaymentByPagBankOrderId,
   updateTicket,
+  upsertCloneLog,
   upsertPayment,
   upsertQueueEntry,
   upsertClient
