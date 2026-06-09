@@ -126,6 +126,133 @@ async function getOrCreateChannel(guild, category, roleIds, spec, report) {
   return channel;
 }
 
+async function copySourceRoles(sourceGuild, targetGuild, report) {
+  await sourceGuild.roles.fetch().catch(() => null);
+  await targetGuild.roles.fetch().catch(() => null);
+
+  const roleIdMap = {
+    [sourceGuild.roles.everyone.id]: targetGuild.roles.everyone.id
+  };
+  const sourceRoles = sourceGuild.roles.cache
+    .filter((role) => role.id !== sourceGuild.roles.everyone.id && !role.managed)
+    .sort((a, b) => a.position - b.position);
+
+  for (const sourceRole of sourceRoles.values()) {
+    const existing = targetGuild.roles.cache.find((role) => role.name === sourceRole.name && !role.managed);
+    if (existing) {
+      roleIdMap[sourceRole.id] = existing.id;
+      report.skipped.roles.push(sourceRole.name);
+      continue;
+    }
+
+    const role = await targetGuild.roles.create({
+      name: sourceRole.name,
+      color: sourceRole.color,
+      hoist: sourceRole.hoist,
+      mentionable: sourceRole.mentionable,
+      permissions: sourceRole.permissions.bitfield,
+      reason: `SetupBot /ativar copiando ${sourceGuild.name}`
+    });
+    roleIdMap[sourceRole.id] = role.id;
+    report.created.roles.push(role.name);
+  }
+
+  return roleIdMap;
+}
+
+function clonePermissionOverwrites(sourceGuild, targetGuild, sourceChannel, roleIdMap) {
+  return sourceChannel.permissionOverwrites.cache
+    .map((overwrite) => {
+      const targetRoleId = roleIdMap[overwrite.id];
+      if (!targetRoleId) {
+        return null;
+      }
+
+      return {
+        id: targetRoleId === sourceGuild.roles.everyone.id ? targetGuild.roles.everyone.id : targetRoleId,
+        allow: overwrite.allow.bitfield,
+        deny: overwrite.deny.bitfield
+      };
+    })
+    .filter(Boolean);
+}
+
+async function copySourceChannels(sourceGuild, targetGuild, roleIdMap, report) {
+  await sourceGuild.channels.fetch().catch(() => null);
+  await targetGuild.channels.fetch().catch(() => null);
+
+  const categoryIdMap = {};
+  const sourceCategories = sourceGuild.channels.cache
+    .filter((channel) => channel.type === ChannelType.GuildCategory)
+    .sort((a, b) => a.rawPosition - b.rawPosition);
+
+  for (const sourceCategory of sourceCategories.values()) {
+    const existing = targetGuild.channels.cache.find((channel) => channel.name === sourceCategory.name && channel.type === ChannelType.GuildCategory);
+    if (existing) {
+      categoryIdMap[sourceCategory.id] = existing.id;
+      report.skipped.categories.push(sourceCategory.name);
+      continue;
+    }
+
+    const category = await targetGuild.channels.create({
+      name: sourceCategory.name,
+      type: ChannelType.GuildCategory,
+      permissionOverwrites: clonePermissionOverwrites(sourceGuild, targetGuild, sourceCategory, roleIdMap),
+      reason: `SetupBot /ativar copiando ${sourceGuild.name}`
+    });
+    categoryIdMap[sourceCategory.id] = category.id;
+    report.created.categories.push(category.name);
+  }
+
+  const supportedTypes = new Set([
+    ChannelType.GuildText,
+    ChannelType.GuildAnnouncement,
+    ChannelType.GuildVoice
+  ]);
+  const sourceChannels = sourceGuild.channels.cache
+    .filter((channel) => supportedTypes.has(channel.type))
+    .sort((a, b) => a.rawPosition - b.rawPosition);
+
+  for (const sourceChannel of sourceChannels.values()) {
+    const existing = targetGuild.channels.cache.find((channel) => channel.name === sourceChannel.name && channel.type === sourceChannel.type);
+    if (existing) {
+      report.skipped.channels.push(sourceChannel.name);
+      continue;
+    }
+
+    const payload = {
+      name: sourceChannel.name,
+      type: sourceChannel.type,
+      parent: sourceChannel.parentId ? categoryIdMap[sourceChannel.parentId] || null : null,
+      permissionOverwrites: clonePermissionOverwrites(sourceGuild, targetGuild, sourceChannel, roleIdMap),
+      reason: `SetupBot /ativar copiando ${sourceGuild.name}`
+    };
+
+    if (sourceChannel.type === ChannelType.GuildText || sourceChannel.type === ChannelType.GuildAnnouncement) {
+      payload.topic = sourceChannel.topic || undefined;
+      payload.nsfw = sourceChannel.nsfw || false;
+      payload.rateLimitPerUser = sourceChannel.rateLimitPerUser || 0;
+    }
+
+    if (sourceChannel.type === ChannelType.GuildVoice) {
+      payload.bitrate = sourceChannel.bitrate;
+      payload.userLimit = sourceChannel.userLimit;
+    }
+
+    const channel = await targetGuild.channels.create(payload);
+    report.created.channels.push(channel.name);
+  }
+}
+
+async function copySourceStructure(sourceGuild, targetGuild, report) {
+  if (!sourceGuild || !targetGuild || sourceGuild.id === targetGuild.id) {
+    return;
+  }
+
+  const roleIdMap = await copySourceRoles(sourceGuild, targetGuild, report);
+  await copySourceChannels(sourceGuild, targetGuild, roleIdMap, report);
+}
+
 async function assignOwnerRole(guild, ownerRole, ownerDiscordId, report) {
   if (!ownerDiscordId || !ownerRole) {
     return 'nao configurado';
@@ -202,7 +329,8 @@ async function sendPanels(guildId, channels, report) {
 }
 
 async function runSetup(interaction, options = {}) {
-  const guild = interaction.guild;
+  const guild = options.targetGuild || interaction.guild;
+  const sourceGuild = options.sourceGuild || interaction.guild;
   const ownerDiscordId = String(options.ownerDiscordId || '').trim() || interaction.user.id;
   const report = {
     created: { roles: [], categories: [], channels: [], panels: [] },
@@ -210,6 +338,8 @@ async function runSetup(interaction, options = {}) {
     skipped: { roles: [], categories: [], channels: [] },
     errors: []
   };
+
+  await copySourceStructure(sourceGuild, guild, report);
 
   const roles = {};
   for (const spec of roleSpecs) {
@@ -237,6 +367,8 @@ async function runSetup(interaction, options = {}) {
   const ownerMember = await guild.members.fetch(ownerDiscordId).catch(() => null);
   const setup = saveGuildSetup(guild.id, {
     guildId: guild.id,
+    sourceGuildId: sourceGuild?.id || null,
+    sourceGuildName: sourceGuild?.name || null,
     ownerDiscordId,
     ownerTag: ownerMember?.user?.tag || null,
     roles: roleIds,
@@ -256,7 +388,8 @@ async function runSetup(interaction, options = {}) {
       { name: 'Painéis enviados', value: String(report.created.panels.length), inline: true },
       { name: '⚙️ Sistemas ativos', value: '6', inline: true },
       { name: 'Itens já existentes', value: String(report.skipped.roles.length + report.skipped.categories.length + report.skipped.channels.length), inline: true },
-      { name: 'Servidor', value: `\`${guild.id}\``, inline: true },
+      { name: 'Origem/modelo', value: sourceGuild ? `${sourceGuild.name}\n\`${sourceGuild.id}\`` : 'nao informado', inline: true },
+      { name: 'Destino', value: `${guild.name}\n\`${guild.id}\``, inline: true },
       { name: 'Dono/responsavel', value: `<@${ownerDiscordId}>\n\`${ownerDiscordId}\``, inline: true },
       { name: 'Cargo Dono', value: ownerAssignment, inline: true }
     )

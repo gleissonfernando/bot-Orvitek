@@ -2168,7 +2168,7 @@ function isDiscordId(value) {
 }
 
 async function handleSetupButton(interaction) {
-  const [action, ownerId, ownerDiscordId] = interaction.customId.split(':');
+  const [action, ownerId, ownerDiscordId, sourceGuildId, targetGuildId] = interaction.customId.split(':');
   if (!['setup_confirm', 'setup_cancel'].includes(action)) {
     await safeReply(interaction, privateReply('Acao de setup invalida.'));
     return true;
@@ -2184,9 +2184,39 @@ async function handleSetupButton(interaction) {
     return true;
   }
 
-  if (!isDiscordId(ownerDiscordId)) {
+  if (![ownerDiscordId, sourceGuildId, targetGuildId].every(isDiscordId)) {
     await safeUpdate(interaction, {
-      content: 'Confirmacao antiga ou invalida. Execute `/ativar` novamente informando o campo `id_discord`.',
+      content: 'Confirmacao antiga ou invalida. Execute `/ativar` novamente informando `servidor_origem`, `servidor_destino` e `id_discord`.',
+      embeds: [],
+      components: []
+    });
+    return true;
+  }
+
+  const sourceGuild = await interaction.client.guilds.fetch(sourceGuildId).catch(() => null);
+  if (!sourceGuild) {
+    await safeUpdate(interaction, {
+      content: 'Nao encontrei o servidor de origem. Confirme se o bot esta nele e execute `/ativar` novamente.',
+      embeds: [],
+      components: []
+    });
+    return true;
+  }
+
+  const targetGuild = await interaction.client.guilds.fetch(targetGuildId).catch(() => null);
+  if (!targetGuild) {
+    await safeUpdate(interaction, {
+      content: 'Nao encontrei o servidor de destino. Confirme se o bot esta nele e execute `/ativar` novamente.',
+      embeds: [],
+      components: []
+    });
+    return true;
+  }
+
+  const executorInTarget = await targetGuild.members.fetch(interaction.user.id).catch(() => null);
+  if (!executorInTarget?.permissions?.has(PermissionFlagsBits.Administrator)) {
+    await safeUpdate(interaction, {
+      content: 'Voce precisa ser administrador no servidor de destino para confirmar esta ativacao.',
       embeds: [],
       components: []
     });
@@ -2194,12 +2224,12 @@ async function handleSetupButton(interaction) {
   }
 
   const updated = await safeUpdate(interaction, {
-    content: 'Configurando o servidor. Isso pode levar alguns instantes...',
+    content: `Configurando o servidor **${targetGuild.name}**. Isso pode levar alguns instantes...`,
     embeds: [],
     components: []
   });
   if (!updated) return true;
-  await runSetup(interaction, { ownerDiscordId });
+  await runSetup(interaction, { ownerDiscordId, sourceGuild, targetGuild });
   return true;
 }
 

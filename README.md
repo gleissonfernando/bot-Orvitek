@@ -59,6 +59,8 @@ npm run deploy
 
 O deploy registra os comandos globalmente, entao o `/ativar` fica disponivel em todos os servidores onde o bot estiver instalado. Se voce tiver comandos locais antigos em algum servidor, preencha `GUILD_ID` ou `GUILD_COMMAND_CLEAR_IDS=id1,id2` antes do deploy para limpa-los.
 
+No `/ativar`, informe o ID do servidor de origem/modelo, o ID do servidor destino onde cargos/canais/paineis serao criados e o ID Discord do dono/responsavel que recebera o cargo Dono no destino. O bot copia cargos nao gerenciados, categorias e canais basicos da origem para o destino antes de publicar os paineis do sistema.
+
 ## Iniciar bot
 
 ```bash
@@ -152,7 +154,7 @@ Para obter o Discord User ID: Discord -> Configurações -> Avançado -> Ativar 
 
 ## Comandos principais
 
-- `/ativar id_discord:<id_do_dono_ou_responsavel>`
+- `/ativar servidor_origem:<id_servidor_modelo> servidor_destino:<id_servidor_destino> id_discord:<id_do_dono_ou_responsavel>`
 - `/clear`
 - `/clean quantidade:<1-100> [usuario] [canal] [motivo]`
 - `/produto`
