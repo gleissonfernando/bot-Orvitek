@@ -2214,12 +2214,33 @@ async function botHasAdministrator(guild) {
 }
 
 async function listCloneDestinations(client, userId, sourceGuildId) {
+  const fetchedGuilds = await client.guilds.fetch().catch(() => null);
+  const guildIds = new Set([
+    ...client.guilds.cache.keys(),
+    ...((fetchedGuilds && typeof fetchedGuilds.keys === 'function') ? fetchedGuilds.keys() : [])
+  ]);
   const destinations = [];
+  const rejected = [];
 
-  for (const guild of client.guilds.cache.values()) {
-    if (guild.id === sourceGuildId) continue;
-    if (guild.ownerId !== userId) continue;
-    if (!(await botHasAdministrator(guild))) continue;
+  for (const guildId of guildIds) {
+    const guild = await client.guilds.fetch(guildId).catch(() => null);
+    if (!guild) continue;
+    if (guild.id === sourceGuildId) {
+      continue;
+    }
+
+    const isOwner = guild.ownerId === userId;
+    const botAdmin = await botHasAdministrator(guild);
+    if (!isOwner || !botAdmin) {
+      rejected.push({
+        id: guild.id,
+        name: guild.name,
+        reason: !isOwner
+          ? 'voce nao e o proprietario'
+          : 'bot sem Administrador'
+      });
+      continue;
+    }
 
     destinations.push({
       id: guild.id,
@@ -2228,7 +2249,27 @@ async function listCloneDestinations(client, userId, sourceGuildId) {
     });
   }
 
-  return destinations.sort((a, b) => a.name.localeCompare(b.name, 'pt-BR'));
+  return {
+    destinations: destinations.sort((a, b) => a.name.localeCompare(b.name, 'pt-BR')),
+    rejected: rejected.sort((a, b) => a.name.localeCompare(b.name, 'pt-BR'))
+  };
+}
+
+function buildCloneNoDestinationMessage(rejected) {
+  const details = rejected.length
+    ? rejected
+      .slice(0, 10)
+      .map((guild) => `- **${guild.name}** (\`${guild.id}\`): ${guild.reason}`)
+      .join('\n')
+    : '- O bot nao encontrou outros servidores em comum com voce.';
+
+  return (
+    'Nao encontrei servidores destino elegiveis.\n\n' +
+    'Para aparecer na lista, o destino precisa cumprir **os dois requisitos**:\n' +
+    '- voce precisa ser o **proprietario/Owner** do servidor, nao apenas Administrador;\n' +
+    '- o bot precisa ter permissao **Administrador** nesse servidor.\n\n' +
+    `Servidores ignorados:\n${details}`
+  );
 }
 
 function buildCloneDestinationPayload(session, page = 0) {
@@ -2387,9 +2428,9 @@ async function handleCloneSourceModal(interaction) {
     return true;
   }
 
-  const destinations = await listCloneDestinations(interaction.client, interaction.user.id, sourceGuild.id);
+  const { destinations, rejected } = await listCloneDestinations(interaction.client, interaction.user.id, sourceGuild.id);
   if (!destinations.length) {
-    await interaction.reply(privateReply('Nao encontrei servidores destino elegiveis. O destino precisa ser seu e o bot precisa ter Administrador nele.'));
+    await interaction.reply(privateReply(buildCloneNoDestinationMessage(rejected)));
     return true;
   }
 
