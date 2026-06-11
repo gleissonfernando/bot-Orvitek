@@ -43,7 +43,7 @@ async function requireBotPermission(guild, permissions, label) {
   return member;
 }
 
-async function validateCloneRequest({ sourceGuild, targetGuild, userId }) {
+async function validateCloneRequest({ sourceGuild, targetGuild }) {
   if (!sourceGuild || !targetGuild) {
     throw new Error('Servidor de origem ou destino nao encontrado.');
   }
@@ -54,14 +54,6 @@ async function validateCloneRequest({ sourceGuild, targetGuild, userId }) {
 
   if (sourceGuild.id === targetGuild.id) {
     throw new Error('O servidor de origem e o destino precisam ser diferentes.');
-  }
-
-  if (sourceGuild.ownerId !== userId) {
-    throw new Error('Apenas o proprietario do servidor de origem pode iniciar a clonagem.');
-  }
-
-  if (targetGuild.ownerId !== userId) {
-    throw new Error('O destino precisa ser um servidor onde voce tambem e proprietario.');
   }
 
   await requireBotPermission(sourceGuild, [PermissionFlagsBits.Administrator], 'de origem');

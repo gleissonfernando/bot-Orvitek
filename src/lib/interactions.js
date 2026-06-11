@@ -2213,7 +2213,7 @@ async function botHasAdministrator(guild) {
   return Boolean(member?.permissions?.has(PermissionFlagsBits.Administrator));
 }
 
-async function listCloneDestinations(client, userId, sourceGuildId) {
+async function listCloneDestinations(client, sourceGuildId) {
   const fetchedGuilds = await client.guilds.fetch().catch(() => null);
   const guildIds = new Set([
     ...client.guilds.cache.keys(),
@@ -2229,15 +2229,12 @@ async function listCloneDestinations(client, userId, sourceGuildId) {
       continue;
     }
 
-    const isOwner = guild.ownerId === userId;
     const botAdmin = await botHasAdministrator(guild);
-    if (!isOwner || !botAdmin) {
+    if (!botAdmin) {
       rejected.push({
         id: guild.id,
         name: guild.name,
-        reason: !isOwner
-          ? 'voce nao e o proprietario'
-          : 'bot sem Administrador'
+        reason: 'bot sem Administrador'
       });
       continue;
     }
@@ -2265,9 +2262,7 @@ function buildCloneNoDestinationMessage(rejected) {
 
   return (
     'Nao encontrei servidores destino elegiveis.\n\n' +
-    'Para aparecer na lista, o destino precisa cumprir **os dois requisitos**:\n' +
-    '- voce precisa ser o **proprietario/Owner** do servidor, nao apenas Administrador;\n' +
-    '- o bot precisa ter permissao **Administrador** nesse servidor.\n\n' +
+    'Para aparecer na lista, o destino precisa ter o bot presente com permissao **Administrador**.\n\n' +
     `Servidores ignorados:\n${details}`
   );
 }
@@ -2327,7 +2322,7 @@ function buildCloneDestinationPayload(session, page = 0) {
     content:
       `## Selecionar destino\n` +
       `Origem validada: **${session.sourceGuildName}** (\`${session.sourceGuildId}\`)\n` +
-      `Voce e o proprietario da origem. Abaixo aparecem apenas servidores onde voce tambem e proprietario e onde o bot tem permissao Administrador.\n` +
+      `Abaixo aparecem os servidores onde o bot tem permissao Administrador. Nao e necessario ter cargo especifico para iniciar a clonagem.\n` +
       `Pagina ${currentPage + 1}/${totalPages}`,
     components: rows
   };
@@ -2418,17 +2413,12 @@ async function handleCloneSourceModal(interaction) {
     return true;
   }
 
-  if (sourceGuild.ownerId !== interaction.user.id) {
-    await interaction.reply(privateReply('Apenas o proprietario do servidor de origem pode iniciar a clonagem.'));
-    return true;
-  }
-
   if (!(await botHasAdministrator(sourceGuild))) {
     await interaction.reply(privateReply('O bot precisa de permissao Administrador no servidor de origem para copiar toda a estrutura.'));
     return true;
   }
 
-  const { destinations, rejected } = await listCloneDestinations(interaction.client, interaction.user.id, sourceGuild.id);
+  const { destinations, rejected } = await listCloneDestinations(interaction.client, sourceGuild.id);
   if (!destinations.length) {
     await interaction.reply(privateReply(buildCloneNoDestinationMessage(rejected)));
     return true;
@@ -2463,7 +2453,7 @@ async function handleCloneDestinationSelect(interaction) {
   }
 
   const targetGuild = await interaction.client.guilds.fetch(targetGuildId).catch(() => null);
-  if (!targetGuild || targetGuild.ownerId !== interaction.user.id || !(await botHasAdministrator(targetGuild))) {
+  if (!targetGuild || !(await botHasAdministrator(targetGuild))) {
     await safeReply(interaction, privateReply('O destino selecionado nao esta mais elegivel para clonagem.'));
     return true;
   }
